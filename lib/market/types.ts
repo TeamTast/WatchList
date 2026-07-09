@@ -24,7 +24,7 @@ export interface Quote {
   dayLow: number;
   volume?: number;
   timestamp: string;
-  source: "mock" | "eodhd" | "massive";
+  source: "mock" | "finnhub" | "eodhd" | "massive";
   realtime: boolean;
 }
 

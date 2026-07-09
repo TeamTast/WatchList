@@ -15,6 +15,7 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { connectFinnhubTradeStream, type FinnhubStatus } from "@/lib/market/finnhub";
 import { buildIndexQuote, buildIndexSeries } from "@/lib/market/index-builder";
 import {
   defaultIndexes,
@@ -58,6 +59,21 @@ const assetLabels: Record<AssetClass, string> = {
   custom_index: "Index"
 };
 
+const sourceLabels: Record<Quote["source"], string> = {
+  mock: "Demo",
+  finnhub: "Finnhub",
+  eodhd: "EODHD",
+  massive: "Massive"
+};
+
+const finnhubStatusLabels: Record<FinnhubStatus, string> = {
+  disabled: "Market demo",
+  connecting: "Finnhub connecting",
+  live: "Finnhub live",
+  error: "Finnhub error",
+  closed: "Finnhub closed"
+};
+
 function formatPrice(value: number, currency: MarketCardView["currency"]) {
   if (currency === "JPY") {
     return new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 0 }).format(value);
@@ -89,6 +105,18 @@ function classForChange(value: number) {
     return "negative";
   }
   return "neutral";
+}
+
+function formatLivePrice(value: number) {
+  if (value >= 1000) {
+    return Number(value.toFixed(0));
+  }
+
+  if (value >= 10) {
+    return Number(value.toFixed(3));
+  }
+
+  return Number(value.toFixed(5));
 }
 
 function reorderCards(cards: WatchCard[], activeId: string, overId: string) {
@@ -184,7 +212,7 @@ function MarketCard({
       <Sparkline series={card.series} tone={changeClass} />
 
       <footer className="card-meta">
-        <span>{assetLabels[card.assetClass]}</span>
+        <span>{assetLabels[card.assetClass]} · {sourceLabels[card.quote.source]}</span>
         <span>H {formatPrice(card.quote.dayHigh, card.currency)}</span>
         <span>L {formatPrice(card.quote.dayLow, card.currency)}</span>
       </footer>
@@ -349,11 +377,20 @@ export function WatchlistApp() {
   const [indexOpen, setIndexOpen] = useState(false);
   const [compactView, setCompactView] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [finnhubStatus, setFinnhubStatus] = useState<FinnhubStatus>("disabled");
+  const [liveInstrumentIds, setLiveInstrumentIds] = useState<Record<string, true>>({});
   const [toast, setToast] = useState("");
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const supabaseReady = isSupabaseBrowserConfigured();
+  const finnhubToken = process.env.NEXT_PUBLIC_FINNHUB_API_KEY ?? "";
+  const finnhubEnabled =
+    process.env.NEXT_PUBLIC_MARKET_DATA_PROVIDER === "finnhub" && Boolean(finnhubToken);
 
   useEffect(() => {
+    if (finnhubEnabled && finnhubStatus === "live") {
+      return undefined;
+    }
+
     const interval = window.setInterval(() => {
       setSeriesByInstrument((current) =>
         Object.fromEntries(
@@ -366,7 +403,49 @@ export function WatchlistApp() {
     }, 2600);
 
     return () => window.clearInterval(interval);
-  }, []);
+  }, [finnhubEnabled, finnhubStatus]);
+
+  useEffect(() => {
+    if (!finnhubEnabled) {
+      setFinnhubStatus("disabled");
+      setLiveInstrumentIds({});
+      return undefined;
+    }
+
+    const subscribedInstruments = cards
+      .filter((card) => card.type === "instrument")
+      .map((card) => instruments.find((instrument) => instrument.id === card.refId))
+      .filter((instrument): instrument is Instrument => Boolean(instrument));
+
+    return connectFinnhubTradeStream({
+      token: finnhubToken,
+      instruments: subscribedInstruments,
+      onStatus: setFinnhubStatus,
+      onTrade: (trade) => {
+        setLiveInstrumentIds((current) => ({
+          ...current,
+          [trade.instrumentId]: true
+        }));
+        setSeriesByInstrument((current) => {
+          const series = current[trade.instrumentId] ?? makeSeries(trade.instrumentId);
+          const nextPoint = {
+            time: trade.timestamp,
+            value: formatLivePrice(trade.price)
+          };
+          const lastPoint = series.at(-1);
+          const nextSeries =
+            lastPoint && trade.timestamp - lastPoint.time < 1_500
+              ? [...series.slice(0, -1), nextPoint]
+              : [...series.slice(1), nextPoint];
+
+          return {
+            ...current,
+            [trade.instrumentId]: nextSeries
+          };
+        });
+      }
+    });
+  }, [cards, finnhubEnabled, finnhubToken]);
 
   useEffect(() => {
     if (!toast) {
@@ -395,6 +474,13 @@ export function WatchlistApp() {
           }
 
           const series = seriesByInstrument[instrument.id] ?? makeSeries(instrument.id);
+          const quote = makeQuote(instrument.id, series);
+
+          if (liveInstrumentIds[instrument.id]) {
+            quote.source = "finnhub";
+            quote.realtime = true;
+          }
+
           return {
             id: instrument.id,
             symbol: instrument.symbol,
@@ -403,7 +489,7 @@ export function WatchlistApp() {
             assetClass: instrument.assetClass,
             currency: instrument.currency,
             providerSymbol: instrument.providerSymbol,
-            quote: makeQuote(instrument.id, series),
+            quote,
             series
           };
         }
@@ -429,7 +515,7 @@ export function WatchlistApp() {
       .filter((card): card is MarketCardView => card !== null);
 
     return mappedCards;
-  }, [cards, customIndexes, seriesByInstrument]);
+  }, [cards, customIndexes, liveInstrumentIds, seriesByInstrument]);
 
   const visibleCards = cardViews.filter((card) => activeTab === "ALL" || card.market === activeTab);
   const existingInstrumentIds = cards
@@ -484,6 +570,10 @@ export function WatchlistApp() {
           <div className={`status-pill ${supabaseReady ? "ready" : ""}`}>
             {supabaseReady ? <Wifi size={15} /> : <WifiOff size={15} />}
             {supabaseReady ? "Sync ready" : "Demo mode"}
+          </div>
+          <div className={`status-pill ${finnhubStatus === "live" ? "ready" : ""}`}>
+            {finnhubStatus === "live" ? <Wifi size={15} /> : <WifiOff size={15} />}
+            {finnhubStatusLabels[finnhubStatus]}
           </div>
           <button className="ghost-button" onClick={loginWithDiscord}>
             <LogIn size={17} />

@@ -1,18 +1,36 @@
 import { createBrowserClient } from "@supabase/ssr";
 
-export function isSupabaseBrowserConfigured() {
-  return Boolean(
-    process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  );
-}
+function getSupabaseBrowserConfig() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-export function createSupabaseBrowserClient() {
-  if (!isSupabaseBrowserConfigured()) {
+  if (!supabaseUrl || !supabaseAnonKey) {
     return null;
   }
 
-  return createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  try {
+    const url = new URL(supabaseUrl);
+
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  return { supabaseUrl, supabaseAnonKey };
+}
+
+export function isSupabaseBrowserConfigured() {
+  return Boolean(getSupabaseBrowserConfig());
+}
+
+export function createSupabaseBrowserClient() {
+  const config = getSupabaseBrowserConfig();
+
+  if (!config) {
+    return null;
+  }
+
+  return createBrowserClient(config.supabaseUrl, config.supabaseAnonKey);
 }

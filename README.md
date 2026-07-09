@@ -14,7 +14,10 @@ Copy `.env.example` to `.env.local` and fill Supabase values when enabling auth.
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
+NEXT_PUBLIC_MARKET_DATA_PROVIDER=mock
+NEXT_PUBLIC_FINNHUB_API_KEY=
 MARKET_DATA_PROVIDER=mock
+FINNHUB_API_KEY=
 EODHD_API_KEY=
 MASSIVE_API_KEY=
 ```
@@ -29,14 +32,14 @@ MASSIVE_API_KEY=
 
 ## Market Data Strategy
 
-- US stocks and FX should use a server-side WebSocket relay for high-frequency updates.
-- Japan equities start with delayed/global snapshot data, then move to a licensed real-time JP feed when budget and license are ready.
-- The API route at `/api/market/snapshot` already normalizes EODHD-style REST snapshots when `MARKET_DATA_PROVIDER=eodhd`.
-- Keep provider keys server-side. Browser clients should subscribe to your own realtime channel or server-sent stream, not vendor sockets directly.
+- Free-first realtime uses Finnhub WebSocket in the browser when `NEXT_PUBLIC_MARKET_DATA_PROVIDER=finnhub` and `NEXT_PUBLIC_FINNHUB_API_KEY` are set.
+- US stocks use symbols like `AAPL`; FX uses OANDA-style symbols like `OANDA:USD_JPY`; Japan equities try `.T` symbols like `7203.T` and fall back to demo data if realtime is not available.
+- The API route at `/api/market/snapshot` normalizes Finnhub REST snapshots when `MARKET_DATA_PROVIDER=finnhub`, and EODHD snapshots when `MARKET_DATA_PROVIDER=eodhd`.
+- For a public production app, move vendor WebSocket keys behind a server relay. The browser key path is intended for a private/friends MVP and fastest free testing.
 
 ## Current MVP
 
-- Local demo data updates every few seconds.
+- Local demo data updates every few seconds. Finnhub live trades replace the demo ticks when configured.
 - Discord button activates when Supabase env vars are set.
 - Watchlist ordering and edits are in local React state until wired to Supabase tables.
 - Original indexes are equal-weighted from selected visible instruments with a 1000 base value.

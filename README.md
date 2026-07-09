@@ -40,3 +40,4 @@ MASSIVE_API_KEY=
 - Discord button activates when Supabase env vars are set.
 - Watchlist ordering and edits are in local React state until wired to Supabase tables.
 - Original indexes are equal-weighted from selected visible instruments with a 1000 base value.
+- Deployment probe: 2026-07-09.

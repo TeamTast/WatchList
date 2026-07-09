@@ -7,6 +7,7 @@ import {
   Minimize2,
   Plus,
   RefreshCw,
+  Save,
   Search,
   Square,
   Trash2,
@@ -14,7 +15,7 @@ import {
   WifiOff,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { connectFinnhubTradeStream, type FinnhubStatus } from "@/lib/market/finnhub";
 import { buildIndexQuote, buildIndexSeries } from "@/lib/market/index-builder";
 import {
@@ -71,6 +72,23 @@ const finnhubStatusLabels: Record<FinnhubStatus, string> = {
   closed: "Finnhub closed"
 };
 
+const layoutStorageKey = "watchlist.layout.v1";
+
+const initialWatchCards: WatchCard[] = [
+  ...defaultWatchCards,
+  { id: "card-idx-ai-us", type: "index", refId: "idx-ai-us" }
+];
+
+type SavedLayout = {
+  version: 1;
+  savedAt: string;
+  instruments: Instrument[];
+  cards: WatchCard[];
+  customIndexes: CustomIndex[];
+  compactView: boolean;
+  activeTab: "ALL" | MarketRegion;
+};
+
 interface SnapshotResponse {
   quotes: Quote[];
 }
@@ -101,6 +119,122 @@ function formatPrice(value: number, currency: MarketCardView["currency"]) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2
   }).format(value);
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isMarketRegion(value: unknown): value is MarketRegion {
+  return value === "US" || value === "JP" || value === "FX" || value === "CUSTOM";
+}
+
+function isInstrument(value: unknown): value is Instrument {
+  if (!isObject(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.id === "string" &&
+    typeof value.symbol === "string" &&
+    typeof value.providerSymbol === "string" &&
+    typeof value.name === "string" &&
+    (value.assetClass === "us_equity" || value.assetClass === "jp_equity" || value.assetClass === "fx") &&
+    isMarketRegion(value.market) &&
+    (value.currency === "USD" || value.currency === "JPY" || value.currency === "PAIR")
+  );
+}
+
+function isWatchCard(value: unknown): value is WatchCard {
+  if (!isObject(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.id === "string" &&
+    (value.type === "instrument" || value.type === "index") &&
+    typeof value.refId === "string"
+  );
+}
+
+function isCustomIndex(value: unknown): value is CustomIndex {
+  if (!isObject(value) || !Array.isArray(value.members)) {
+    return false;
+  }
+
+  return (
+    typeof value.id === "string" &&
+    typeof value.name === "string" &&
+    typeof value.baseValue === "number" &&
+    (value.weighting === "equal" || value.weighting === "custom") &&
+    value.members.every(
+      (member) =>
+        isObject(member) &&
+        typeof member.instrumentId === "string" &&
+        typeof member.weight === "number"
+    )
+  );
+}
+
+function mergeInstruments(savedInstruments: Instrument[]) {
+  const instrumentsById = new Map(defaultInstruments.map((instrument) => [instrument.id, instrument]));
+
+  savedInstruments.forEach((instrument) => {
+    instrumentsById.set(instrument.id, instrument);
+  });
+
+  return Array.from(instrumentsById.values());
+}
+
+function readSavedLayout(storage: Storage): SavedLayout | null {
+  const rawLayout = storage.getItem(layoutStorageKey);
+
+  if (!rawLayout) {
+    return null;
+  }
+
+  try {
+    const layout = JSON.parse(rawLayout) as unknown;
+
+    if (!isObject(layout)) {
+      return null;
+    }
+
+    const activeTab = layout.activeTab === "ALL" || isMarketRegion(layout.activeTab) ? layout.activeTab : "ALL";
+    const instruments = Array.isArray(layout.instruments)
+      ? layout.instruments.filter(isInstrument)
+      : defaultInstruments;
+    const cards = Array.isArray(layout.cards) ? layout.cards.filter(isWatchCard) : initialWatchCards;
+    const customIndexes = Array.isArray(layout.customIndexes)
+      ? layout.customIndexes.filter(isCustomIndex)
+      : defaultIndexes;
+
+    if (!cards.length) {
+      return null;
+    }
+
+    return {
+      version: 1,
+      savedAt: typeof layout.savedAt === "string" ? layout.savedAt : new Date().toISOString(),
+      instruments,
+      cards,
+      customIndexes,
+      compactView: Boolean(layout.compactView),
+      activeTab
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeSavedLayout(storage: Storage, layout: Omit<SavedLayout, "version" | "savedAt">) {
+  const payload: SavedLayout = {
+    ...layout,
+    version: 1,
+    savedAt: new Date().toISOString()
+  };
+
+  storage.setItem(layoutStorageKey, JSON.stringify(payload));
 }
 
 function formatChange(quote: Quote) {
@@ -550,10 +684,7 @@ function IndexDialog({
 
 export function WatchlistApp() {
   const [availableInstruments, setAvailableInstruments] = useState<Instrument[]>(defaultInstruments);
-  const [cards, setCards] = useState<WatchCard[]>([
-    ...defaultWatchCards,
-    { id: "card-idx-ai-us", type: "index", refId: "idx-ai-us" }
-  ]);
+  const [cards, setCards] = useState<WatchCard[]>(initialWatchCards);
   const [customIndexes, setCustomIndexes] = useState<CustomIndex[]>(defaultIndexes);
   const [activeTab, setActiveTab] = useState<"ALL" | MarketRegion>("ALL");
   const [seriesByInstrument, setSeriesByInstrument] = useState<Record<string, SeriesPoint[]>>({});
@@ -569,11 +700,45 @@ export function WatchlistApp() {
   const [serverQuoteSource, setServerQuoteSource] = useState<Quote["source"] | null>(null);
   const [snapshotError, setSnapshotError] = useState(false);
   const [toast, setToast] = useState("");
+  const layoutLoaded = useRef(false);
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const supabaseReady = isSupabaseBrowserConfigured();
   const finnhubToken = process.env.NEXT_PUBLIC_FINNHUB_API_KEY ?? "";
   const finnhubEnabled =
     process.env.NEXT_PUBLIC_MARKET_DATA_PROVIDER === "finnhub" && Boolean(finnhubToken);
+
+  useEffect(() => {
+    const savedLayout = readSavedLayout(window.localStorage);
+
+    if (savedLayout) {
+      setAvailableInstruments(mergeInstruments(savedLayout.instruments));
+      setCards(savedLayout.cards);
+      setCustomIndexes(savedLayout.customIndexes);
+      setCompactView(savedLayout.compactView);
+      setActiveTab(savedLayout.activeTab);
+      setToast("Saved layout loaded");
+    }
+
+    layoutLoaded.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!layoutLoaded.current) {
+      return;
+    }
+
+    try {
+      writeSavedLayout(window.localStorage, {
+        instruments: availableInstruments,
+        cards,
+        customIndexes,
+        compactView,
+        activeTab
+      });
+    } catch {
+      setToast("Layout save failed");
+    }
+  }, [activeTab, availableInstruments, cards, compactView, customIndexes]);
 
   useEffect(() => {
     if (!finnhubEnabled) {
@@ -945,6 +1110,21 @@ export function WatchlistApp() {
     await document.documentElement.requestFullscreen();
   }
 
+  function saveLayoutNow() {
+    try {
+      writeSavedLayout(window.localStorage, {
+        instruments: availableInstruments,
+        cards,
+        customIndexes,
+        compactView,
+        activeTab
+      });
+      setToast("Layout saved");
+    } catch {
+      setToast("Layout save failed");
+    }
+  }
+
   return (
     <main className={`app-shell ${compactView ? "compact" : ""}`}>
       <section className="workspace-bar">
@@ -978,6 +1158,10 @@ export function WatchlistApp() {
           <button className="ghost-button" onClick={loginWithDiscord}>
             <LogIn size={17} />
             Discord
+          </button>
+          <button className="ghost-button" onClick={saveLayoutNow}>
+            <Save size={17} />
+            Save
           </button>
           <button className="ghost-button" onClick={() => setIndexOpen(true)}>
             <BarChart3 size={17} />

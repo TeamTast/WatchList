@@ -44,6 +44,6 @@ MASSIVE_API_KEY=
 
 - Local demo data updates every few seconds. Finnhub snapshots or live trades replace the demo ticks when configured.
 - Discord button activates when Supabase env vars are set.
-- Watchlist ordering and edits are in local React state until wired to Supabase tables.
+- Watchlist ordering, added instruments, custom indexes, the active tab, and compact view are saved locally in the browser.
 - Original indexes are equal-weighted from selected visible instruments with a 1000 base value.
 - Deployment probe: 2026-07-09.

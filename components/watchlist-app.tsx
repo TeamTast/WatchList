@@ -144,6 +144,36 @@ function appendSeriesPoint(series: SeriesPoint[], point: SeriesPoint) {
   return [...series.slice(1), point];
 }
 
+function buildSeriesFromQuote(quote: Quote): SeriesPoint[] {
+  const timestamp = Date.parse(quote.timestamp);
+  const currentTime = Number.isFinite(timestamp) ? timestamp : Date.now();
+  const previousTime = currentTime - 60 * 60 * 1000;
+
+  if (
+    Number.isFinite(quote.previousClose) &&
+    quote.previousClose > 0 &&
+    quote.previousClose !== quote.price
+  ) {
+    return [
+      {
+        time: previousTime,
+        value: formatLivePrice(quote.previousClose)
+      },
+      {
+        time: currentTime,
+        value: formatLivePrice(quote.price)
+      }
+    ];
+  }
+
+  return [
+    {
+      time: currentTime,
+      value: formatLivePrice(quote.price)
+    }
+  ];
+}
+
 function buildQuoteFromSeries(instrumentId: string, series: SeriesPoint[], source: Quote["source"]) {
   const latest = series.at(-1);
 
@@ -247,11 +277,30 @@ function Sparkline({ series, tone }: { series: SeriesPoint[]; tone: "positive" |
     })
     .join(" ");
   const area = `${line} L${width - padding},${height - padding} L${padding},${height - padding} Z`;
+  const singleY = height / 2;
 
   return (
     <svg className="sparkline" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="price chart">
-      <path d={area} fill={`var(--${tone})`} opacity="0.08" />
-      <path d={line} fill="none" stroke={`var(--${tone})`} strokeLinecap="round" strokeWidth="2" />
+      {series.length > 1 ? (
+        <>
+          <path d={area} fill={`var(--${tone})`} opacity="0.08" />
+          <path d={line} fill="none" stroke={`var(--${tone})`} strokeLinecap="round" strokeWidth="2" />
+        </>
+      ) : (
+        <>
+          <line
+            x1={padding}
+            x2={width - padding}
+            y1={singleY}
+            y2={singleY}
+            stroke={`var(--${tone})`}
+            strokeDasharray="4 6"
+            strokeOpacity="0.45"
+            strokeWidth="1.5"
+          />
+          <circle cx={width / 2} cy={singleY} fill={`var(--${tone})`} r="4" />
+        </>
+      )}
     </svg>
   );
 }
@@ -745,7 +794,10 @@ export function WatchlistApp() {
 
           if (series?.length) {
             next[update.instrument.id] = appendSeriesPoint(series, update.point);
+            return;
           }
+
+          next[update.instrument.id] = buildSeriesFromQuote(update.quote);
         });
 
         return next;
@@ -828,7 +880,7 @@ export function WatchlistApp() {
         }
 
         const series = buildIndexSeries(customIndex, seriesByInstrument);
-        const quote = series.length ? buildIndexQuote(customIndex, series) : null;
+        const quote = series.length ? buildIndexQuote(customIndex, series, serverQuoteSource ?? "finnhub") : null;
         return {
           id: customIndex.id,
           symbol: customIndex.name,
@@ -852,6 +904,7 @@ export function WatchlistApp() {
     historyErrors,
     liveInstrumentIds,
     quoteOverrides,
+    serverQuoteSource,
     seriesByInstrument
   ]);
 

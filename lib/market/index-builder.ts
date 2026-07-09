@@ -9,7 +9,7 @@ export function buildIndexSeries(
       ...member,
       series: seriesByInstrument[member.instrumentId] ?? []
     }))
-    .filter((member) => member.series.length > 1);
+    .filter((member) => member.series.length > 0);
 
   if (!memberSeries.length) {
     return [];
@@ -32,7 +32,11 @@ export function buildIndexSeries(
   });
 }
 
-export function buildIndexQuote(customIndex: CustomIndex, series: SeriesPoint[]): Quote {
+export function buildIndexQuote(
+  customIndex: CustomIndex,
+  series: SeriesPoint[],
+  source: Quote["source"] = "finnhub"
+): Quote {
   const last = series.at(-1)?.value ?? customIndex.baseValue;
   const previous = series.at(-12)?.value ?? last;
   const values = series.map((point) => point.value);
@@ -47,7 +51,7 @@ export function buildIndexQuote(customIndex: CustomIndex, series: SeriesPoint[])
     dayHigh: values.length ? Math.max(...values) : last,
     dayLow: values.length ? Math.min(...values) : last,
     timestamp: new Date().toISOString(),
-    source: "mock",
+    source,
     realtime: false
   };
 }

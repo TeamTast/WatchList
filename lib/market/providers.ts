@@ -1,6 +1,5 @@
-import { makeQuote } from "@/lib/market/mock";
 import { toFinnhubSymbol } from "@/lib/market/finnhub";
-import type { Quote } from "@/lib/market/types";
+import type { Quote, SeriesPoint } from "@/lib/market/types";
 
 interface EodhdResponse {
   code?: string;
@@ -24,6 +23,24 @@ interface FinnhubQuoteResponse {
   t?: number;
 }
 
+interface FinnhubCandleResponse {
+  c?: number[];
+  h?: number[];
+  l?: number[];
+  o?: number[];
+  s?: string;
+  t?: number[];
+  v?: number[];
+}
+
+export interface MarketHistory {
+  instrumentId: string;
+  quote: Quote | null;
+  series: SeriesPoint[];
+  source: Quote["source"] | null;
+  error?: string;
+}
+
 export async function getMarketSnapshots(providerSymbols: string[]): Promise<Quote[]> {
   const provider = process.env.MARKET_DATA_PROVIDER ?? "mock";
 
@@ -35,7 +52,7 @@ export async function getMarketSnapshots(providerSymbols: string[]): Promise<Quo
     return getEodhdSnapshots(providerSymbols);
   }
 
-  return providerSymbols.map((providerSymbol) => makeQuote(providerSymbol));
+  return [];
 }
 
 function getFinnhubToken() {
@@ -62,6 +79,11 @@ async function getFinnhubSnapshots(providerSymbols: string[]): Promise<Quote[]> 
 
       const row = (await response.json()) as FinnhubQuoteResponse;
       const price = Number(row.c ?? 0);
+
+      if (!Number.isFinite(price) || price <= 0) {
+        throw new Error(`Finnhub quote returned no price for ${symbol}`);
+      }
+
       const previousClose = Number(row.pc ?? price);
       const change = Number(row.d ?? price - previousClose);
 
@@ -79,6 +101,107 @@ async function getFinnhubSnapshots(providerSymbols: string[]): Promise<Quote[]> 
       };
     })
   );
+}
+
+export async function getMarketHistory(providerSymbols: string[]): Promise<MarketHistory[]> {
+  const provider = process.env.MARKET_DATA_PROVIDER ?? "mock";
+
+  if (provider === "finnhub" && getFinnhubToken()) {
+    return getFinnhubHistory(providerSymbols);
+  }
+
+  return providerSymbols.map((providerSymbol) => ({
+    instrumentId: providerSymbol,
+    quote: null,
+    series: [],
+    source: null,
+    error: "Market data provider is not configured."
+  }));
+}
+
+async function getFinnhubHistory(providerSymbols: string[]): Promise<MarketHistory[]> {
+  const token = getFinnhubToken()!;
+  const now = Math.floor(Date.now() / 1000);
+  const from = now - 60 * 60 * 24 * 5;
+
+  return Promise.all(
+    providerSymbols.map(async (providerSymbol) => {
+      const symbol = toFinnhubSymbol(providerSymbol);
+      const url = new URL(getFinnhubCandleEndpoint(providerSymbol));
+      url.searchParams.set("symbol", symbol);
+      url.searchParams.set("resolution", "15");
+      url.searchParams.set("from", String(from));
+      url.searchParams.set("to", String(now));
+      url.searchParams.set("token", token);
+
+      try {
+        const response = await fetch(url, {
+          cache: "no-store"
+        });
+
+        if (!response.ok) {
+          throw new Error(`Finnhub candle failed for ${symbol}: ${response.status}`);
+        }
+
+        const row = (await response.json()) as FinnhubCandleResponse;
+
+        if (row.s !== "ok" || !row.c?.length || !row.t?.length) {
+          throw new Error(`Finnhub candle returned no data for ${symbol}`);
+        }
+
+        const series = row.c
+          .map((close, index) => ({
+            time: Number(row.t?.[index] ?? 0) * 1000,
+            value: Number(close)
+          }))
+          .filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value) && point.value > 0);
+
+        if (!series.length) {
+          throw new Error(`Finnhub candle returned invalid data for ${symbol}`);
+        }
+
+        const latest = series.at(-1)!;
+        const previous = series.at(-2)?.value ?? latest.value;
+        const values = series.map((point) => point.value);
+        const change = latest.value - previous;
+        const quote: Quote = {
+          instrumentId: providerSymbol,
+          price: latest.value,
+          previousClose: previous,
+          change,
+          changePercent: previous ? (change / previous) * 100 : 0,
+          dayHigh: Math.max(...values),
+          dayLow: Math.min(...values),
+          timestamp: new Date(latest.time).toISOString(),
+          source: "finnhub",
+          realtime: false
+        };
+
+        return {
+          instrumentId: providerSymbol,
+          quote,
+          series,
+          source: "finnhub" as const
+        };
+      } catch (error) {
+        return {
+          instrumentId: providerSymbol,
+          quote: null,
+          series: [],
+          source: null,
+          error: error instanceof Error ? error.message : "Failed to load market history."
+        };
+      }
+    })
+  );
+}
+
+function getFinnhubCandleEndpoint(providerSymbol: string) {
+  if (providerSymbol.endsWith(".FOREX")) {
+    return "https://finnhub.io/api/v1/forex/candle";
+  }
+
+  return "https://finnhub.io/api/v1/stock/candle";
 }
 
 async function getEodhdSnapshots(providerSymbols: string[]): Promise<Quote[]> {

@@ -456,6 +456,33 @@ h1 {
   height: 82px;
 }
 
+.no-data-panel {
+  display: grid;
+  min-height: 118px;
+  align-content: center;
+  gap: 6px;
+  margin-top: 12px;
+  border: 1px solid var(--surface-strong);
+  border-radius: 2px;
+  padding: 12px;
+  color: var(--muted);
+  background: #10100f;
+}
+
+.app-shell.compact .no-data-panel {
+  min-height: 82px;
+}
+
+.no-data-panel strong {
+  color: var(--text);
+  font-size: 18px;
+}
+
+.no-data-panel span {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .card-meta {
   justify-content: space-between;
   gap: 8px;

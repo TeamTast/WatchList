@@ -59,7 +59,9 @@ export interface MarketCardView {
   market: MarketRegion;
   assetClass: AssetClass;
   currency: "USD" | "JPY" | "PAIR";
-  quote: Quote;
+  quote: Quote | null;
   series: SeriesPoint[];
   providerSymbol?: string;
+  status: "loading" | "ready" | "unavailable";
+  message?: string;
 }

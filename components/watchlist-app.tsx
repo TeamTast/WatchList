@@ -18,12 +18,9 @@ import { useEffect, useMemo, useState } from "react";
 import { connectFinnhubTradeStream, type FinnhubStatus } from "@/lib/market/finnhub";
 import { buildIndexQuote, buildIndexSeries } from "@/lib/market/index-builder";
 import {
+  instruments as defaultInstruments,
   defaultIndexes,
-  defaultWatchCards,
-  instruments,
-  makeQuote,
-  makeSeries,
-  tickSeries
+  defaultWatchCards
 } from "@/lib/market/mock";
 import type {
   AssetClass,
@@ -74,6 +71,20 @@ const finnhubStatusLabels: Record<FinnhubStatus, string> = {
   closed: "Finnhub closed"
 };
 
+interface SnapshotResponse {
+  quotes: Quote[];
+}
+
+interface HistoryResponse {
+  histories: Array<{
+    instrumentId: string;
+    quote: Quote | null;
+    series: SeriesPoint[];
+    source: Quote["source"] | null;
+    error?: string;
+  }>;
+}
+
 function formatPrice(value: number, currency: MarketCardView["currency"]) {
   if (currency === "JPY") {
     return new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 0 }).format(value);
@@ -117,6 +128,93 @@ function formatLivePrice(value: number) {
   }
 
   return Number(value.toFixed(5));
+}
+
+function appendSeriesPoint(series: SeriesPoint[], point: SeriesPoint) {
+  const lastPoint = series.at(-1);
+
+  if (!series.length) {
+    return [point];
+  }
+
+  if (lastPoint && point.time - lastPoint.time < 1_500) {
+    return [...series.slice(0, -1), point];
+  }
+
+  return [...series.slice(1), point];
+}
+
+function buildQuoteFromSeries(instrumentId: string, series: SeriesPoint[], source: Quote["source"]) {
+  const latest = series.at(-1);
+
+  if (!latest) {
+    return null;
+  }
+
+  const previous = series.at(-2)?.value ?? latest.value;
+  const values = series.map((point) => point.value);
+  const change = latest.value - previous;
+
+  return {
+    instrumentId,
+    price: latest.value,
+    previousClose: previous,
+    change,
+    changePercent: previous ? (change / previous) * 100 : 0,
+    dayHigh: Math.max(...values),
+    dayLow: Math.min(...values),
+    timestamp: new Date(latest.time).toISOString(),
+    source,
+    realtime: source === "finnhub"
+  } satisfies Quote;
+}
+
+function createInstrumentFromInput(input: string): Instrument | null {
+  const raw = input.trim().toUpperCase().replace(/\s+/g, "");
+
+  if (!raw) {
+    return null;
+  }
+
+  const pair = raw.replace("/", "");
+
+  if (/^[A-Z]{6}$/.test(pair)) {
+    return {
+      id: `fx-${pair.toLowerCase()}`,
+      symbol: `${pair.slice(0, 3)}/${pair.slice(3)}`,
+      providerSymbol: `${pair}.FOREX`,
+      name: `${pair.slice(0, 3)}/${pair.slice(3)}`,
+      assetClass: "fx",
+      market: "FX",
+      currency: "PAIR"
+    };
+  }
+
+  if (/^\d{4}$/.test(raw)) {
+    return {
+      id: `jp-${raw}`,
+      symbol: raw,
+      providerSymbol: `${raw}.TSE`,
+      name: `${raw}.T`,
+      assetClass: "jp_equity",
+      market: "JP",
+      currency: "JPY"
+    };
+  }
+
+  if (/^[A-Z.]{1,12}$/.test(raw)) {
+    return {
+      id: `us-${raw.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      symbol: raw,
+      providerSymbol: `${raw}.US`,
+      name: raw,
+      assetClass: "us_equity",
+      market: "US",
+      currency: "USD"
+    };
+  }
+
+  return null;
 }
 
 function reorderCards(cards: WatchCard[], activeId: string, overId: string) {
@@ -173,7 +271,7 @@ function MarketCard({
   onDragEnter: (id: string) => void;
   onDragEnd: () => void;
 }) {
-  const changeClass = classForChange(card.quote.change);
+  const changeClass = classForChange(card.quote?.change ?? 0);
 
   return (
     <article
@@ -201,36 +299,58 @@ function MarketCard({
         </button>
       </header>
 
-      <div className="price-row">
-        <div>
-          <span className="price">{formatPrice(card.quote.price, card.currency)}</span>
-          <span className="currency">{card.currency === "PAIR" ? "" : card.currency}</span>
-        </div>
-        <span className={`change ${changeClass}`}>{formatChange(card.quote)}</span>
-      </div>
+      {card.quote && card.series.length ? (
+        <>
+          <div className="price-row">
+            <div>
+              <span className="price">{formatPrice(card.quote.price, card.currency)}</span>
+              <span className="currency">{card.currency === "PAIR" ? "" : card.currency}</span>
+            </div>
+            <span className={`change ${changeClass}`}>{formatChange(card.quote)}</span>
+          </div>
 
-      <Sparkline series={card.series} tone={changeClass} />
+          <Sparkline series={card.series} tone={changeClass} />
+        </>
+      ) : (
+        <div className="no-data-panel">
+          <strong>{card.status === "loading" ? "取得中" : "データなし"}</strong>
+          <span>{card.message ?? "価格データを取得できませんでした。"}</span>
+        </div>
+      )}
 
       <footer className="card-meta">
-        <span>{assetLabels[card.assetClass]} · {sourceLabels[card.quote.source]}</span>
-        <span>H {formatPrice(card.quote.dayHigh, card.currency)}</span>
-        <span>L {formatPrice(card.quote.dayLow, card.currency)}</span>
+        <span>
+          {assetLabels[card.assetClass]} · {card.quote ? sourceLabels[card.quote.source] : "No data"}
+        </span>
+        {card.quote ? (
+          <>
+            <span>H {formatPrice(card.quote.dayHigh, card.currency)}</span>
+            <span>L {formatPrice(card.quote.dayLow, card.currency)}</span>
+          </>
+        ) : null}
       </footer>
     </article>
   );
 }
 
 function AddInstrumentDialog({
+  availableInstruments,
   existingInstrumentIds,
   onClose,
   onAdd
 }: {
+  availableInstruments: Instrument[];
   existingInstrumentIds: string[];
   onClose: () => void;
   onAdd: (instrument: Instrument) => void;
 }) {
   const [query, setQuery] = useState("");
-  const candidates = instruments.filter((instrument) => {
+  const customInstrument = createInstrumentFromInput(query);
+  const canAddCustom =
+    customInstrument &&
+    !existingInstrumentIds.includes(customInstrument.id) &&
+    !availableInstruments.some((instrument) => instrument.providerSymbol === customInstrument.providerSymbol);
+  const candidates = availableInstruments.filter((instrument) => {
     if (existingInstrumentIds.includes(instrument.id)) {
       return false;
     }
@@ -263,6 +383,23 @@ function AddInstrumentDialog({
         </label>
 
         <div className="candidate-list">
+          {canAddCustom ? (
+            <button
+              className="candidate-row create-row"
+              onClick={() => {
+                onAdd(customInstrument);
+                onClose();
+              }}
+            >
+              <span>
+                <strong>{customInstrument.symbol}</strong>
+                <small>{customInstrument.providerSymbol} を追加</small>
+              </span>
+              <span className={`market-pill ${customInstrument.market.toLowerCase()}`}>
+                {marketLabels[customInstrument.market]}
+              </span>
+            </button>
+          ) : null}
           {candidates.map((instrument) => (
             <button
               key={instrument.id}
@@ -363,15 +500,14 @@ function IndexDialog({
 }
 
 export function WatchlistApp() {
+  const [availableInstruments, setAvailableInstruments] = useState<Instrument[]>(defaultInstruments);
   const [cards, setCards] = useState<WatchCard[]>([
     ...defaultWatchCards,
     { id: "card-idx-ai-us", type: "index", refId: "idx-ai-us" }
   ]);
   const [customIndexes, setCustomIndexes] = useState<CustomIndex[]>(defaultIndexes);
   const [activeTab, setActiveTab] = useState<"ALL" | MarketRegion>("ALL");
-  const [seriesByInstrument, setSeriesByInstrument] = useState<Record<string, SeriesPoint[]>>(() =>
-    Object.fromEntries(instruments.map((instrument) => [instrument.id, makeSeries(instrument.id)]))
-  );
+  const [seriesByInstrument, setSeriesByInstrument] = useState<Record<string, SeriesPoint[]>>({});
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [indexOpen, setIndexOpen] = useState(false);
@@ -379,31 +515,16 @@ export function WatchlistApp() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [finnhubStatus, setFinnhubStatus] = useState<FinnhubStatus>("disabled");
   const [liveInstrumentIds, setLiveInstrumentIds] = useState<Record<string, true>>({});
+  const [quoteOverrides, setQuoteOverrides] = useState<Record<string, Quote>>({});
+  const [historyErrors, setHistoryErrors] = useState<Record<string, string>>({});
+  const [serverQuoteSource, setServerQuoteSource] = useState<Quote["source"] | null>(null);
+  const [snapshotError, setSnapshotError] = useState(false);
   const [toast, setToast] = useState("");
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const supabaseReady = isSupabaseBrowserConfigured();
   const finnhubToken = process.env.NEXT_PUBLIC_FINNHUB_API_KEY ?? "";
   const finnhubEnabled =
     process.env.NEXT_PUBLIC_MARKET_DATA_PROVIDER === "finnhub" && Boolean(finnhubToken);
-
-  useEffect(() => {
-    if (finnhubEnabled && finnhubStatus === "live") {
-      return undefined;
-    }
-
-    const interval = window.setInterval(() => {
-      setSeriesByInstrument((current) =>
-        Object.fromEntries(
-          Object.entries(current).map(([instrumentId, series]) => [
-            instrumentId,
-            tickSeries(instrumentId, series)
-          ])
-        )
-      );
-    }, 2600);
-
-    return () => window.clearInterval(interval);
-  }, [finnhubEnabled, finnhubStatus]);
 
   useEffect(() => {
     if (!finnhubEnabled) {
@@ -414,7 +535,7 @@ export function WatchlistApp() {
 
     const subscribedInstruments = cards
       .filter((card) => card.type === "instrument")
-      .map((card) => instruments.find((instrument) => instrument.id === card.refId))
+      .map((card) => availableInstruments.find((instrument) => instrument.id === card.refId))
       .filter((instrument): instrument is Instrument => Boolean(instrument));
 
     return connectFinnhubTradeStream({
@@ -427,25 +548,229 @@ export function WatchlistApp() {
           [trade.instrumentId]: true
         }));
         setSeriesByInstrument((current) => {
-          const series = current[trade.instrumentId] ?? makeSeries(trade.instrumentId);
+          const series = current[trade.instrumentId] ?? [];
           const nextPoint = {
             time: trade.timestamp,
             value: formatLivePrice(trade.price)
           };
-          const lastPoint = series.at(-1);
-          const nextSeries =
-            lastPoint && trade.timestamp - lastPoint.time < 1_500
-              ? [...series.slice(0, -1), nextPoint]
-              : [...series.slice(1), nextPoint];
 
           return {
             ...current,
-            [trade.instrumentId]: nextSeries
+            [trade.instrumentId]: appendSeriesPoint(series, nextPoint)
           };
         });
       }
     });
-  }, [cards, finnhubEnabled, finnhubToken]);
+  }, [availableInstruments, cards, finnhubEnabled, finnhubToken]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadHistory() {
+      const subscribedInstruments = cards
+        .filter((card) => card.type === "instrument")
+        .map((card) => availableInstruments.find((instrument) => instrument.id === card.refId))
+        .filter((instrument): instrument is Instrument => Boolean(instrument));
+
+      if (!subscribedInstruments.length) {
+        return;
+      }
+
+      const providerSymbols = subscribedInstruments.map((instrument) => instrument.providerSymbol);
+      const response = await fetch(
+        `/api/market/history?symbols=${encodeURIComponent(providerSymbols.join(","))}`,
+        { cache: "no-store" }
+      );
+
+      if (!response.ok) {
+        throw new Error(`History request failed: ${response.status}`);
+      }
+
+      const payload = (await response.json()) as HistoryResponse;
+      const instrumentByProviderSymbol = new Map(
+        subscribedInstruments.map((instrument) => [instrument.providerSymbol, instrument])
+      );
+      const seriesUpdates: Record<string, SeriesPoint[]> = {};
+      const quoteUpdates: Record<string, Quote> = {};
+      const errorUpdates: Record<string, string> = {};
+      let source: Quote["source"] | null = null;
+
+      payload.histories.forEach((history) => {
+        const instrument = instrumentByProviderSymbol.get(history.instrumentId);
+
+        if (!instrument) {
+          return;
+        }
+
+        if (history.quote && history.series.length) {
+          seriesUpdates[instrument.id] = history.series;
+          quoteUpdates[instrument.id] = {
+            ...history.quote,
+            instrumentId: instrument.id
+          };
+          source = history.quote.source;
+          return;
+        }
+
+        errorUpdates[instrument.id] = history.error ?? "価格データを取得できませんでした。";
+      });
+
+      if (cancelled) {
+        return;
+      }
+
+      setSeriesByInstrument((current) => ({
+        ...current,
+        ...seriesUpdates
+      }));
+      setQuoteOverrides((current) => ({
+        ...current,
+        ...quoteUpdates
+      }));
+      setHistoryErrors((current) => {
+        const next = {
+          ...current,
+          ...errorUpdates
+        };
+
+        Object.keys(seriesUpdates).forEach((instrumentId) => {
+          delete next[instrumentId];
+        });
+
+        return next;
+      });
+
+      if (source) {
+        setServerQuoteSource(source);
+        setSnapshotError(false);
+      }
+    }
+
+    void loadHistory().catch(() => {
+      if (!cancelled) {
+        setSnapshotError(true);
+        setHistoryErrors((current) => ({
+          ...current,
+          ...Object.fromEntries(
+            cards
+              .filter((card) => card.type === "instrument")
+              .map((card) => [card.refId, "価格履歴を取得できませんでした。"])
+          )
+        }));
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [availableInstruments, cards]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSnapshots() {
+      const subscribedInstruments = cards
+        .filter((card) => card.type === "instrument")
+        .map((card) => availableInstruments.find((instrument) => instrument.id === card.refId))
+        .filter((instrument): instrument is Instrument => Boolean(instrument));
+
+      if (!subscribedInstruments.length) {
+        return;
+      }
+
+      const providerSymbols = subscribedInstruments.map((instrument) => instrument.providerSymbol);
+      const response = await fetch(
+        `/api/market/snapshot?symbols=${encodeURIComponent(providerSymbols.join(","))}`,
+        { cache: "no-store" }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Snapshot request failed: ${response.status}`);
+      }
+
+      const payload = (await response.json()) as SnapshotResponse;
+      const instrumentByProviderSymbol = new Map(
+        subscribedInstruments.map((instrument) => [instrument.providerSymbol, instrument])
+      );
+      const updates = payload.quotes
+        .map((quote) => {
+          const instrument = instrumentByProviderSymbol.get(quote.instrumentId);
+
+          if (!instrument || quote.source === "mock" || !Number.isFinite(quote.price) || quote.price <= 0) {
+            return null;
+          }
+
+          const timestamp = Date.parse(quote.timestamp);
+          return {
+            instrument,
+            quote: {
+              ...quote,
+              instrumentId: instrument.id
+            },
+            point: {
+              time: Number.isFinite(timestamp) ? timestamp : Date.now(),
+              value: formatLivePrice(quote.price)
+            }
+          };
+        })
+        .filter(
+          (
+            update
+          ): update is {
+            instrument: Instrument;
+            quote: Quote;
+            point: SeriesPoint;
+          } => update !== null
+        );
+
+      if (cancelled) {
+        return;
+      }
+
+      if (!updates.length) {
+        return;
+      }
+
+      setSnapshotError(false);
+      setServerQuoteSource(updates[0].quote.source);
+      setQuoteOverrides((current) => ({
+        ...current,
+        ...Object.fromEntries(updates.map((update) => [update.instrument.id, update.quote]))
+      }));
+      setSeriesByInstrument((current) => {
+        const next = { ...current };
+
+        updates.forEach((update) => {
+          const series = next[update.instrument.id];
+
+          if (series?.length) {
+            next[update.instrument.id] = appendSeriesPoint(series, update.point);
+          }
+        });
+
+        return next;
+      });
+    }
+
+    void loadSnapshots().catch(() => {
+      if (!cancelled) {
+        setSnapshotError(true);
+      }
+    });
+
+    const interval = window.setInterval(() => {
+      void loadSnapshots().catch(() => {
+        if (!cancelled) {
+          setSnapshotError(true);
+        }
+      });
+    }, 20_000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [availableInstruments, cards]);
 
   useEffect(() => {
     if (!toast) {
@@ -467,18 +792,18 @@ export function WatchlistApp() {
     const mappedCards = cards
       .map((card): MarketCardView | null => {
         if (card.type === "instrument") {
-          const instrument = instruments.find((item) => item.id === card.refId);
+          const instrument = availableInstruments.find((item) => item.id === card.refId);
 
           if (!instrument) {
             return null;
           }
 
-          const series = seriesByInstrument[instrument.id] ?? makeSeries(instrument.id);
-          const quote = makeQuote(instrument.id, series);
+          const series = seriesByInstrument[instrument.id] ?? [];
+          let quote: Quote | null =
+            quoteOverrides[instrument.id] ?? buildQuoteFromSeries(instrument.id, series, "finnhub");
 
           if (liveInstrumentIds[instrument.id]) {
-            quote.source = "finnhub";
-            quote.realtime = true;
+            quote = buildQuoteFromSeries(instrument.id, series, "finnhub");
           }
 
           return {
@@ -490,7 +815,9 @@ export function WatchlistApp() {
             currency: instrument.currency,
             providerSymbol: instrument.providerSymbol,
             quote,
-            series
+            series,
+            status: quote && series.length ? "ready" : historyErrors[instrument.id] ? "unavailable" : "loading",
+            message: historyErrors[instrument.id]
           };
         }
 
@@ -501,6 +828,7 @@ export function WatchlistApp() {
         }
 
         const series = buildIndexSeries(customIndex, seriesByInstrument);
+        const quote = series.length ? buildIndexQuote(customIndex, series) : null;
         return {
           id: customIndex.id,
           symbol: customIndex.name,
@@ -508,19 +836,38 @@ export function WatchlistApp() {
           market: "CUSTOM" as const,
           assetClass: "custom_index" as const,
           currency: "PAIR" as const,
-          quote: buildIndexQuote(customIndex, series),
-          series
+          quote,
+          series,
+          status: quote ? "ready" as const : "unavailable" as const,
+          message: quote ? undefined : "指数の構成銘柄データを取得できませんでした。"
         };
       })
       .filter((card): card is MarketCardView => card !== null);
 
     return mappedCards;
-  }, [cards, customIndexes, liveInstrumentIds, seriesByInstrument]);
+  }, [
+    availableInstruments,
+    cards,
+    customIndexes,
+    historyErrors,
+    liveInstrumentIds,
+    quoteOverrides,
+    seriesByInstrument
+  ]);
 
   const visibleCards = cardViews.filter((card) => activeTab === "ALL" || card.market === activeTab);
   const existingInstrumentIds = cards
     .filter((card) => card.type === "instrument")
     .map((card) => card.refId);
+  const marketDataReady = finnhubStatus === "live" || Boolean(serverQuoteSource);
+  const marketDataLabel =
+    finnhubStatus === "live"
+      ? finnhubStatusLabels[finnhubStatus]
+      : serverQuoteSource
+        ? `${sourceLabels[serverQuoteSource]} snapshots`
+        : snapshotError
+          ? "Market data error"
+          : finnhubStatusLabels[finnhubStatus];
 
   async function loginWithDiscord() {
     if (!supabase) {
@@ -569,11 +916,11 @@ export function WatchlistApp() {
           </div>
           <div className={`status-pill ${supabaseReady ? "ready" : ""}`}>
             {supabaseReady ? <Wifi size={15} /> : <WifiOff size={15} />}
-            {supabaseReady ? "Sync ready" : "Demo mode"}
+            {supabaseReady ? "Sync ready" : "Local edits"}
           </div>
-          <div className={`status-pill ${finnhubStatus === "live" ? "ready" : ""}`}>
-            {finnhubStatus === "live" ? <Wifi size={15} /> : <WifiOff size={15} />}
-            {finnhubStatusLabels[finnhubStatus]}
+          <div className={`status-pill ${marketDataReady ? "ready" : ""}`}>
+            {marketDataReady ? <Wifi size={15} /> : <WifiOff size={15} />}
+            {marketDataLabel}
           </div>
           <button className="ghost-button" onClick={loginWithDiscord}>
             <LogIn size={17} />
@@ -649,17 +996,25 @@ export function WatchlistApp() {
 
       {addOpen ? (
         <AddInstrumentDialog
+          availableInstruments={availableInstruments}
           existingInstrumentIds={existingInstrumentIds}
           onClose={() => setAddOpen(false)}
           onAdd={(instrument) => {
-            setCards((current) => [
-              ...current,
-              { id: `card-${instrument.id}`, type: "instrument", refId: instrument.id }
-            ]);
-            setSeriesByInstrument((current) => ({
-              ...current,
-              [instrument.id]: current[instrument.id] ?? makeSeries(instrument.id)
-            }));
+            setAvailableInstruments((current) =>
+              current.some((item) => item.id === instrument.id || item.providerSymbol === instrument.providerSymbol)
+                ? current
+                : [...current, instrument]
+            );
+            setHistoryErrors((current) => {
+              const next = { ...current };
+              delete next[instrument.id];
+              return next;
+            });
+            setCards((current) =>
+              current.some((card) => card.refId === instrument.id)
+                ? current
+                : [...current, { id: `card-${instrument.id}`, type: "instrument", refId: instrument.id }]
+            );
           }}
         />
       ) : null}

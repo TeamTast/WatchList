@@ -42,6 +42,7 @@ export interface WatchCard {
 export interface CustomIndexMember {
   instrumentId: string;
   weight: number;
+  effectiveAt?: string;
 }
 
 export interface CustomIndex {
@@ -50,6 +51,7 @@ export interface CustomIndex {
   baseValue: number;
   weighting: WeightingMode;
   members: CustomIndexMember[];
+  lastRebalancedAt?: string;
 }
 
 export interface MarketCardView {

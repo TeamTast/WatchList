@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AlertTriangle,
   BarChart3,
   FolderKanban,
   GripVertical,
@@ -13,9 +14,11 @@ import {
   Save,
   Search,
   Server,
+  SlidersHorizontal,
   Square,
   Sun,
   Trash2,
+  Undo2,
   Wifi,
   WifiOff,
   X
@@ -89,6 +92,14 @@ function spaceLayoutStorageKey(spaceId: string | null) {
 }
 
 type Theme = "dark" | "light";
+
+type UndoDeletion = {
+  message: string;
+  card: WatchCard;
+  cardPosition: number;
+  customIndex?: CustomIndex;
+  indexPosition?: number;
+};
 
 function applyDocumentTheme(theme: Theme) {
   document.documentElement.dataset.theme = theme;
@@ -894,6 +905,7 @@ function MarketCard({
   card,
   dragging,
   onRemove,
+  onManageIndex,
   onRename,
   onDragStart,
   onDragEnter,
@@ -902,6 +914,7 @@ function MarketCard({
   card: MarketCardView;
   dragging: boolean;
   onRemove: (id: string) => void;
+  onManageIndex: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onDragStart: (id: string) => void;
   onDragEnter: (id: string) => void;
@@ -950,9 +963,21 @@ function MarketCard({
             </>
           )}
         </div>
-        <button className="icon-button danger" title="削除" onClick={() => onRemove(card.id)}>
-          <Trash2 size={16} />
-        </button>
+        <div className="card-actions">
+          {card.assetClass === "custom_index" ? (
+            <button
+              className="icon-button manage-index"
+              title="構成銘柄を管理"
+              aria-label={`${card.symbol}の構成銘柄を管理`}
+              onClick={() => onManageIndex(card.id)}
+            >
+              <SlidersHorizontal size={16} />
+            </button>
+          ) : null}
+          <button className="icon-button danger" title="削除" onClick={() => onRemove(card.id)}>
+            <Trash2 size={16} />
+          </button>
+        </div>
       </header>
 
       {card.quote && card.series.length ? (
@@ -1229,7 +1254,12 @@ function IndexDialog({
               name: name.trim(),
               baseValue: 1000,
               weighting: "equal",
-              members: selected.map((instrumentId) => ({ instrumentId, weight: 1 }))
+              members: selected.map((instrumentId) => ({
+                instrumentId,
+                weight: 1,
+                effectiveAt: new Date().toISOString()
+              })),
+              lastRebalancedAt: new Date().toISOString()
             });
             onClose();
           }}
@@ -1237,6 +1267,239 @@ function IndexDialog({
           <BarChart3 size={17} />
           作成
         </button>
+      </section>
+    </div>
+  );
+}
+
+function IndexManagementDialog({
+  customIndex,
+  instruments,
+  quotesByInstrument,
+  seriesByInstrument,
+  onClose,
+  onUpdate
+}: {
+  customIndex: CustomIndex;
+  instruments: Instrument[];
+  quotesByInstrument: Record<string, Quote>;
+  seriesByInstrument: Record<string, SeriesPoint[]>;
+  onClose: () => void;
+  onUpdate: (customIndex: CustomIndex) => void;
+}) {
+  const totalWeight = customIndex.members.reduce((sum, member) => sum + member.weight, 0) || 1;
+  const [weights, setWeights] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      customIndex.members.map((member) => [
+        member.instrumentId,
+        ((member.weight / totalWeight) * 100).toFixed(2)
+      ])
+    )
+  );
+  const [replacements, setReplacements] = useState<Record<string, string>>({});
+  const [feedback, setFeedback] = useState("");
+  const memberIds = customIndex.members.map((member) => member.instrumentId);
+  const enteredTotal = customIndex.members.reduce(
+    (sum, member) => sum + (Number(weights[member.instrumentId]) || 0),
+    0
+  );
+  const validWeights = customIndex.members.every((member) => Number(weights[member.instrumentId]) > 0);
+  const totalIsValid = Math.abs(enteredTotal - 100) < 0.01;
+  const positionValues = customIndex.members.map((member) => {
+    const series = seriesByInstrument[member.instrumentId] ?? [];
+    const latest = series.at(-1);
+    const effectiveTime = member.effectiveAt ? Date.parse(member.effectiveAt) : Number.NaN;
+    const base = Number.isFinite(effectiveTime)
+      ? series.find((point) => point.time >= effectiveTime) ?? latest
+      : series[0];
+    const relativeValue = latest && base?.value ? latest.value / base.value : 1;
+    return {
+      instrumentId: member.instrumentId,
+      value: (member.weight / totalWeight) * relativeValue
+    };
+  });
+  const totalPositionValue = positionValues.reduce((sum, position) => sum + position.value, 0) || 1;
+  const currentWeights = Object.fromEntries(
+    positionValues.map((position) => [position.instrumentId, (position.value / totalPositionValue) * 100])
+  );
+
+  function setEqualWeights() {
+    const equalWeight = Math.floor(10000 / customIndex.members.length) / 100;
+    setWeights(
+      Object.fromEntries(
+        customIndex.members.map((member, index) => [
+          member.instrumentId,
+          index === customIndex.members.length - 1
+            ? (100 - equalWeight * (customIndex.members.length - 1)).toFixed(2)
+            : equalWeight.toFixed(2)
+        ])
+      )
+    );
+    setFeedback("");
+  }
+
+  function replaceMember(instrumentId: string) {
+    const replacementId = replacements[instrumentId];
+    if (!replacementId) {
+      return;
+    }
+
+    const nextMembers = customIndex.members.map((member) =>
+      member.instrumentId === instrumentId
+        ? { ...member, instrumentId: replacementId, effectiveAt: new Date().toISOString() }
+        : member
+    );
+    const nextWeights = { ...weights, [replacementId]: weights[instrumentId] };
+    delete nextWeights[instrumentId];
+    setWeights(nextWeights);
+    setReplacements({});
+    onUpdate({ ...customIndex, members: nextMembers });
+    setFeedback("構成銘柄を入れ替えました。リバランス比率は引き継がれています。");
+  }
+
+  function rebalance() {
+    if (!validWeights || !totalIsValid) {
+      return;
+    }
+
+    const rebalancedAt = new Date().toISOString();
+    const nextMembers = customIndex.members.map((member) => ({
+      ...member,
+      weight: Number(weights[member.instrumentId]),
+      effectiveAt: rebalancedAt
+    }));
+    const firstWeight = nextMembers[0]?.weight ?? 0;
+    const isEqual = nextMembers.every((member) => Math.abs(member.weight - firstWeight) < 0.01);
+    onUpdate({
+      ...customIndex,
+      members: nextMembers,
+      weighting: isEqual ? "equal" : "custom",
+      lastRebalancedAt: rebalancedAt
+    });
+    setFeedback("新しい構成比率でリバランスしました。");
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="modal-panel index-management-modal" role="dialog" aria-modal="true" aria-label="指数の構成銘柄管理">
+        <header className="modal-header">
+          <div>
+            <span className="eyebrow">Index constituents</span>
+            <h2>{customIndex.name}</h2>
+            <p>構成銘柄の確認、入れ替え、構成比率のリバランスができます。</p>
+          </div>
+          <button className="icon-button muted" title="閉じる" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="index-management-summary">
+          <span>{customIndex.members.length}銘柄</span>
+          <span>{customIndex.weighting === "equal" ? "等ウェイト" : "カスタムウェイト"}</span>
+          <span>
+            最終リバランス: {customIndex.lastRebalancedAt
+              ? new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium", timeStyle: "short" }).format(new Date(customIndex.lastRebalancedAt))
+              : "未実施"}
+          </span>
+        </div>
+
+        <div className="constituent-list">
+          {customIndex.members.map((member) => {
+            const instrument = instruments.find((item) => item.id === member.instrumentId);
+            const replacementCandidates = instruments.filter((item) => !memberIds.includes(item.id));
+            const quote = quotesByInstrument[member.instrumentId]
+              ?? buildQuoteFromSeries(member.instrumentId, seriesByInstrument[member.instrumentId] ?? [], "finnhub");
+            const currentWeight = currentWeights[member.instrumentId] ?? (member.weight / totalWeight) * 100;
+            const targetWeight = (member.weight / totalWeight) * 100;
+            const weightDrift = currentWeight - targetWeight;
+            const changeClass = classForChange(quote?.changePercent ?? 0);
+            return (
+              <div className="constituent-row" key={member.instrumentId}>
+                <div className="constituent-identity">
+                  <strong>{instrument?.symbol ?? member.instrumentId}</strong>
+                  <small>{instrument?.name ?? "銘柄情報なし"}</small>
+                  <div className="constituent-metrics">
+                    <span>現在 <strong>{currentWeight.toFixed(2)}%</strong></span>
+                    <span>乖離 <strong className={classForChange(weightDrift)}>{weightDrift >= 0 ? "+" : ""}{weightDrift.toFixed(2)}pt</strong></span>
+                    <span>1日 <strong className={changeClass}>{quote ? `${quote.changePercent >= 0 ? "+" : ""}${quote.changePercent.toFixed(2)}%` : "--"}</strong></span>
+                  </div>
+                </div>
+                <label className="weight-field">
+                  <span>目標ウェイト</span>
+                  <div><input type="number" min="0.01" max="100" step="0.01" value={weights[member.instrumentId] ?? ""} onChange={(event) => setWeights((current) => ({ ...current, [member.instrumentId]: event.target.value }))} /><span>%</span></div>
+                </label>
+                <div className="replacement-control">
+                  <select aria-label={`${instrument?.symbol ?? member.instrumentId}の入れ替え先`} value={replacements[member.instrumentId] ?? ""} onChange={(event) => setReplacements((current) => ({ ...current, [member.instrumentId]: event.target.value }))}>
+                    <option value="">入れ替え先を選択</option>
+                    {replacementCandidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.symbol} / {candidate.name}</option>)}
+                  </select>
+                  <button className="ghost-button" disabled={!replacements[member.instrumentId]} onClick={() => replaceMember(member.instrumentId)}>入れ替え</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="rebalance-footer">
+          <div>
+            <span>合計</span>
+            <strong className={totalIsValid ? "" : "invalid"}>{enteredTotal.toFixed(2)}%</strong>
+          </div>
+          <button className="ghost-button" onClick={setEqualWeights}>均等配分に戻す</button>
+          <button className="primary-button" disabled={!validWeights || !totalIsValid} onClick={rebalance}>
+            <RefreshCw size={16} />
+            リバランスを実行
+          </button>
+        </div>
+        {!totalIsValid ? <p className="form-error">構成比の合計を100%にしてください。</p> : null}
+        {feedback ? <p className="index-management-feedback" role="status">{feedback}</p> : null}
+      </section>
+    </div>
+  );
+}
+
+function DeleteIndexDialog({
+  customIndex,
+  onCancel,
+  onConfirm
+}: {
+  customIndex: CustomIndex;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const [acknowledged, setAcknowledged] = useState(false);
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="modal-panel delete-index-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-index-title" aria-describedby="delete-index-description">
+        <header className="modal-header">
+          <div>
+            <span className="delete-warning-label"><AlertTriangle size={15} /> Irreversible action</span>
+            <h2 id="delete-index-title">オリジナル指数を削除しますか？</h2>
+            <p id="delete-index-description">「{customIndex.name}」と、その構成・ウェイト設定が削除されます。この操作は元に戻せません。</p>
+          </div>
+          <button className="icon-button muted" title="キャンセル" onClick={onCancel}>
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="delete-index-summary">
+          <strong>{customIndex.name}</strong>
+          <span>{customIndex.members.length}銘柄 / {customIndex.weighting === "equal" ? "等ウェイト" : "カスタムウェイト"}</span>
+        </div>
+
+        <label className="delete-index-acknowledgement">
+          <input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />
+          <span>指数の構成と設定が失われ、元に戻せないことを確認しました。</span>
+        </label>
+
+        <div className="delete-index-actions">
+          <button className="ghost-button" onClick={onCancel}>キャンセル</button>
+          <button className="danger-button" disabled={!acknowledged} onClick={onConfirm}>
+            <Trash2 size={16} />
+            完全に削除
+          </button>
+        </div>
       </section>
     </div>
   );
@@ -1364,6 +1627,8 @@ export function WatchlistApp() {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [indexOpen, setIndexOpen] = useState(false);
+  const [managedIndexId, setManagedIndexId] = useState<string | null>(null);
+  const [pendingDeleteIndexId, setPendingDeleteIndexId] = useState<string | null>(null);
   const [compactView, setCompactView] = useState(false);
   const [theme, setTheme] = useState<Theme>("dark");
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -1380,6 +1645,7 @@ export function WatchlistApp() {
   const [spaceDialogOpen, setSpaceDialogOpen] = useState(false);
   const [workspaceStatus, setWorkspaceStatus] = useState<"local" | "connecting" | "synced" | "error">("local");
   const [toast, setToast] = useState("");
+  const [undoDeletion, setUndoDeletion] = useState<UndoDeletion | null>(null);
   const layoutLoaded = useRef(false);
   const remoteSyncReady = useRef(false);
   const lastSyncedLayoutFingerprint = useRef("");
@@ -1710,9 +1976,17 @@ export function WatchlistApp() {
     let cancelled = false;
 
     async function loadHistory() {
-      const subscribedInstruments = cards
-        .filter((card) => card.type === "instrument")
-        .map((card) => availableInstruments.find((instrument) => instrument.id === card.refId))
+      const subscribedInstrumentIds = new Set(
+        cards.flatMap((card) => {
+          if (card.type === "instrument") {
+            return [card.refId];
+          }
+
+          return customIndexes.find((customIndex) => customIndex.id === card.refId)?.members.map((member) => member.instrumentId) ?? [];
+        })
+      );
+      const subscribedInstruments = Array.from(subscribedInstrumentIds)
+        .map((instrumentId) => availableInstruments.find((instrument) => instrument.id === instrumentId))
         .filter((instrument): instrument is Instrument => Boolean(instrument));
 
       if (!subscribedInstruments.length) {
@@ -1806,15 +2080,23 @@ export function WatchlistApp() {
     return () => {
       cancelled = true;
     };
-  }, [availableInstruments, cards, marketRefreshNonce]);
+  }, [availableInstruments, cards, customIndexes, marketRefreshNonce]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadSnapshots() {
-      const subscribedInstruments = cards
-        .filter((card) => card.type === "instrument")
-        .map((card) => availableInstruments.find((instrument) => instrument.id === card.refId))
+      const subscribedInstrumentIds = new Set(
+        cards.flatMap((card) => {
+          if (card.type === "instrument") {
+            return [card.refId];
+          }
+
+          return customIndexes.find((customIndex) => customIndex.id === card.refId)?.members.map((member) => member.instrumentId) ?? [];
+        })
+      );
+      const subscribedInstruments = Array.from(subscribedInstrumentIds)
+        .map((instrumentId) => availableInstruments.find((instrument) => instrument.id === instrumentId))
         .filter(
           (instrument): instrument is Instrument =>
             Boolean(instrument) && instrument?.assetClass === "us_equity"
@@ -1925,7 +2207,7 @@ export function WatchlistApp() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [availableInstruments, cards, marketRefreshNonce]);
+  }, [availableInstruments, cards, customIndexes, marketRefreshNonce]);
 
   useEffect(() => {
     if (!toast) {
@@ -1935,6 +2217,15 @@ export function WatchlistApp() {
     const timeout = window.setTimeout(() => setToast(""), 3600);
     return () => window.clearTimeout(timeout);
   }, [toast]);
+
+  useEffect(() => {
+    if (!undoDeletion) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => setUndoDeletion(null), 6000);
+    return () => window.clearTimeout(timeout);
+  }, [undoDeletion]);
 
   useEffect(() => {
     const handleFullscreenChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
@@ -1983,7 +2274,7 @@ export function WatchlistApp() {
         return {
           id: customIndex.id,
           symbol: customIndex.name,
-          name: `${customIndex.members.length}銘柄 / equal weight`,
+          name: `${customIndex.members.length}銘柄 / ${customIndex.weighting === "equal" ? "equal weight" : "custom weight"}`,
           market: "CUSTOM" as const,
           assetClass: "custom_index" as const,
           currency: "PAIR" as const,
@@ -2007,6 +2298,8 @@ export function WatchlistApp() {
   ]);
 
   const visibleCards = cardViews.filter((card) => activeTab === "ALL" || card.market === activeTab);
+  const managedIndex = customIndexes.find((customIndex) => customIndex.id === managedIndexId) ?? null;
+  const pendingDeleteIndex = customIndexes.find((customIndex) => customIndex.id === pendingDeleteIndexId) ?? null;
   const existingInstrumentIds = cards
     .filter((card) => card.type === "instrument")
     .map((card) => card.refId);
@@ -2314,11 +2607,27 @@ export function WatchlistApp() {
             key={card.id}
             card={card}
             dragging={draggingId === card.id}
-            onRemove={(id) =>
+            onRemove={(id) => {
+              if (customIndexes.some((customIndex) => customIndex.id === id)) {
+                setPendingDeleteIndexId(id);
+                return;
+              }
+
+              const deletedCardPosition = cards.findIndex((card) => card.refId === id || card.id === id);
+              const deletedCard = cards[deletedCardPosition];
+              const deletedInstrument = availableInstruments.find((instrument) => instrument.id === id);
               setCards((current) =>
                 current.filter((watchCard) => !(watchCard.refId === id || watchCard.id === id))
-              )
-            }
+              );
+              if (deletedCard) {
+                setUndoDeletion({
+                  message: `「${deletedInstrument?.name ?? deletedInstrument?.symbol ?? id}」を削除しました。`,
+                  card: deletedCard,
+                  cardPosition: deletedCardPosition
+                });
+              }
+            }}
+            onManageIndex={setManagedIndexId}
             onRename={renameCard}
             onDragStart={(id) => setDraggingId(id)}
             onDragEnter={(overId) => {
@@ -2352,6 +2661,47 @@ export function WatchlistApp() {
               ...current,
               { id: `card-${customIndex.id}`, type: "index", refId: customIndex.id }
             ]);
+            setManagedIndexId(customIndex.id);
+          }}
+        />
+      ) : null}
+
+      {managedIndex ? (
+        <IndexManagementDialog
+          customIndex={managedIndex}
+          instruments={availableInstruments}
+          quotesByInstrument={quoteOverrides}
+          seriesByInstrument={seriesByInstrument}
+          onClose={() => setManagedIndexId(null)}
+          onUpdate={(updatedIndex) => {
+            setCustomIndexes((current) =>
+              current.map((customIndex) => customIndex.id === updatedIndex.id ? updatedIndex : customIndex)
+            );
+          }}
+        />
+      ) : null}
+
+      {pendingDeleteIndex ? (
+        <DeleteIndexDialog
+          customIndex={pendingDeleteIndex}
+          onCancel={() => setPendingDeleteIndexId(null)}
+          onConfirm={() => {
+            const deletedCardPosition = cards.findIndex((card) => card.refId === pendingDeleteIndex.id);
+            const deletedCard = cards[deletedCardPosition];
+            const deletedIndexPosition = customIndexes.findIndex((customIndex) => customIndex.id === pendingDeleteIndex.id);
+            setCards((current) => current.filter((card) => card.refId !== pendingDeleteIndex.id));
+            setCustomIndexes((current) => current.filter((customIndex) => customIndex.id !== pendingDeleteIndex.id));
+            setManagedIndexId((current) => current === pendingDeleteIndex.id ? null : current);
+            setPendingDeleteIndexId(null);
+            if (deletedCard) {
+              setUndoDeletion({
+                message: `「${pendingDeleteIndex.name}」を削除しました。`,
+                card: deletedCard,
+                cardPosition: deletedCardPosition,
+                customIndex: pendingDeleteIndex,
+                indexPosition: deletedIndexPosition
+              });
+            }
           }}
         />
       ) : null}
@@ -2368,7 +2718,42 @@ export function WatchlistApp() {
         />
       ) : null}
 
-      {toast ? <div className="toast" role="status" aria-live="polite">{toast}</div> : null}
+      {undoDeletion ? (
+        <div className="toast undo-toast" role="status" aria-live="polite">
+          <span>{undoDeletion.message}</span>
+          <button
+            onClick={() => {
+              setCards((current) => {
+                if (current.some((card) => card.id === undoDeletion.card.id)) {
+                  return current;
+                }
+                const next = [...current];
+                next.splice(Math.min(Math.max(undoDeletion.cardPosition, 0), next.length), 0, undoDeletion.card);
+                return next;
+              });
+              if (undoDeletion.customIndex) {
+                setCustomIndexes((current) => {
+                  if (current.some((customIndex) => customIndex.id === undoDeletion.customIndex?.id)) {
+                    return current;
+                  }
+                  const next = [...current];
+                  next.splice(
+                    Math.min(Math.max(undoDeletion.indexPosition ?? next.length, 0), next.length),
+                    0,
+                    undoDeletion.customIndex!
+                  );
+                  return next;
+                });
+              }
+              setUndoDeletion(null);
+              setToast("削除を取り消しました。");
+            }}
+          >
+            <Undo2 size={15} />
+            取り消す
+          </button>
+        </div>
+      ) : toast ? <div className="toast" role="status" aria-live="polite">{toast}</div> : null}
     </main>
   );
 }

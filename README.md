@@ -14,6 +14,7 @@ Copy `.env.example` to `.env.local` and fill Supabase values when enabling auth.
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
+SUPABASE_SECRET_KEY=
 MARKET_DATA_PROVIDER=mock
 FINNHUB_API_KEY=
 EODHD_API_KEY=
@@ -24,12 +25,15 @@ MASSIVE_API_KEY=
 
 1. Create a Supabase project.
    `NEXT_PUBLIC_SUPABASE_URL` には `https://<project-ref>.supabase.co` だけを設定し、`/rest/v1` などのパスは付けません。
-   `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` には Project Settings > API Keys の Publishable key（`sb_publishable_...`）を設定します。Secret key（`sb_secret_...`）はブラウザへ公開しないでください。
+   `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` には Project Settings > API Keys の Publishable key（`sb_publishable_...`）を設定します。
+   `SUPABASE_SECRET_KEY` には Secret key（`sb_secret_...`）を設定します。このキーはDiscord所属確認後のメンバー登録にだけサーバー側で使い、`NEXT_PUBLIC_` を付けないでください。
 2. Supabase Dashboardの Authentication > Sign In / Providers でDiscordを有効化し、DiscordのClient ID / Client Secretを保存します。
 3. Discord Developer PortalのOAuth2 Redirectsには、Supabase画面に表示される `https://<project-ref>.supabase.co/auth/v1/callback` を登録します。アプリの `/auth/callback` ではありません。
-4. `data/supabase-schema.sql`、続けて `data/shared-workspace-migration.sql` をSupabase SQL Editorで実行します。
+4. `data/supabase-schema.sql`、`data/shared-workspace-migration.sql`、`data/spaces-migration.sql` の順にSupabase SQL Editorで実行します。
 5. SupabaseのURL ConfigurationでSite URLを設定し、Redirect URLsへ `http://127.0.0.1:3000/auth/callback` と本番の `https://<host>/auth/callback` を追加します。
 6. 利用者をDiscordだけに限定する場合は、SupabaseのほかのSign In Providerを無効にします。
+
+Discord認証では `identify email guilds` スコープを要求します。既存のログインセッションは一度ログアウトし、再ログインして所属サーバー一覧へのアクセスを許可してください。サーバー配下には複数の共有スペースを、個人には複数のプライベートスペースを作成できます。
 
 ## Market Data Strategy
 

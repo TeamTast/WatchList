@@ -2,14 +2,17 @@
 
 import {
   BarChart3,
+  FolderKanban,
   GripVertical,
   LogIn,
+  LockKeyhole,
   Minimize2,
   Moon,
   Plus,
   RefreshCw,
   Save,
   Search,
+  Server,
   Square,
   Sun,
   Trash2,
@@ -35,6 +38,7 @@ import type {
   SeriesPoint,
   WatchCard
 } from "@/lib/market/types";
+import type { DiscordGuild, SpaceKind, SpaceSummary, SpacesResponse } from "@/lib/spaces/types";
 import { createSupabaseBrowserClient, isSupabaseBrowserConfigured } from "@/lib/supabase/client";
 
 const tabs: Array<{ key: "ALL" | MarketRegion; label: string }> = [
@@ -68,9 +72,13 @@ const sourceLabels: Record<Quote["source"], string> = {
 };
 
 const layoutStorageKey = "watchlist.layout.v1";
+const activeSpaceStorageKey = "watchlist.active-space.v1";
 const themeStorageKey = "watchlist.theme.v1";
-const sharedWorkspaceKey = "shared-market-desk";
 const snapshotPollIntervalMs = 60_000;
+
+function spaceLayoutStorageKey(spaceId: string | null) {
+  return spaceId ? `${layoutStorageKey}.${spaceId}` : layoutStorageKey;
+}
 
 type Theme = "dark" | "light";
 
@@ -247,8 +255,8 @@ function parseSavedLayout(layout: unknown): SavedLayout | null {
   };
 }
 
-function readSavedLayout(storage: Storage): SavedLayout | null {
-  const rawLayout = storage.getItem(layoutStorageKey);
+function readSavedLayout(storage: Storage, storageKey = layoutStorageKey): SavedLayout | null {
+  const rawLayout = storage.getItem(storageKey);
 
   if (!rawLayout) {
     return null;
@@ -513,6 +521,8 @@ function formatSeriesTime(time: number) {
   }).format(new Date(time));
 }
 
+type CalloutAnchor = "top-left" | "top-right" | "bottom-left" | "bottom-right";
+
 function Sparkline({
   series,
   tone,
@@ -531,8 +541,11 @@ function Sparkline({
   const svgRef = useRef<SVGSVGElement>(null);
   const touchActive = useRef(false);
   const leaderScaleRatio = useRef(1);
+  const calloutAnchorRef = useRef<CalloutAnchor | null>(null);
+  const pendingAnchorRef = useRef<CalloutAnchor | null>(null);
+  const anchorTimeoutRef = useRef<number | null>(null);
   const [activeTime, setActiveTime] = useState<number | null>(null);
-  const [calloutHorizontal, setCalloutHorizontal] = useState<"left" | "right">("right");
+  const [calloutAnchor, setCalloutAnchor] = useState<CalloutAnchor | null>(null);
   const orderedSeries = useMemo(() => {
     const pointsByTime = new Map<number, SeriesPoint>();
 
@@ -573,9 +586,12 @@ function Sparkline({
   const activePoint = activeIndex >= 0 ? points[activeIndex] : null;
   const terminalPoint = points.at(-1) ?? null;
   const fallbackPoint = activePoint ?? terminalPoint;
-  const calloutVertical = activePoint && activePoint.y < height / 2 ? "top" : "bottom";
-  const calloutAnchor = `${calloutVertical}-${calloutHorizontal}`;
-  const leaderAnchorY = calloutVertical === "top" ? 24 : height - 24;
+  const fallbackHorizontal = activePoint && activePoint.x < width / 2 ? "left" : "right";
+  const fallbackVertical = activePoint && activePoint.y < height / 2 ? "top" : "bottom";
+  const displayedAnchor = calloutAnchor ?? `${fallbackVertical}-${fallbackHorizontal}` as CalloutAnchor;
+  const calloutHorizontal = displayedAnchor.endsWith("left") ? "left" : "right";
+  const calloutVertical = displayedAnchor.startsWith("top") ? "top" : "bottom";
+  const leaderAnchorY = calloutVertical === "top" ? valueToY(max) : valueToY(min);
   const leaderEndX = calloutHorizontal === "left" ? -20 : width + 20;
   const leaderDirection = calloutHorizontal === "left" ? -1 : 1;
   const desiredElbowX = activePoint
@@ -590,7 +606,58 @@ function Sparkline({
     && previousClose <= max;
   const previousCloseY = valueToY(previousClose);
 
-  function updateCalloutGeometry(pointX: number) {
+  function cancelPendingAnchor() {
+    if (anchorTimeoutRef.current !== null) {
+      window.clearTimeout(anchorTimeoutRef.current);
+      anchorTimeoutRef.current = null;
+    }
+
+    pendingAnchorRef.current = null;
+  }
+
+  function scheduleCalloutAnchor(candidate: CalloutAnchor) {
+    const current = calloutAnchorRef.current;
+
+    if (current === null) {
+      cancelPendingAnchor();
+      calloutAnchorRef.current = candidate;
+      setCalloutAnchor(candidate);
+      return;
+    }
+
+    if (candidate === current) {
+      cancelPendingAnchor();
+      return;
+    }
+
+    if (pendingAnchorRef.current === candidate && anchorTimeoutRef.current !== null) {
+      return;
+    }
+
+    cancelPendingAnchor();
+    pendingAnchorRef.current = candidate;
+    anchorTimeoutRef.current = window.setTimeout(() => {
+      calloutAnchorRef.current = candidate;
+      pendingAnchorRef.current = null;
+      anchorTimeoutRef.current = null;
+      setCalloutAnchor(candidate);
+    }, 500);
+  }
+
+  function clearActiveSelection() {
+    cancelPendingAnchor();
+    calloutAnchorRef.current = null;
+    setCalloutAnchor(null);
+    setActiveTime(null);
+  }
+
+  useEffect(() => () => {
+    if (anchorTimeoutRef.current !== null) {
+      window.clearTimeout(anchorTimeoutRef.current);
+    }
+  }, []);
+
+  function updateCalloutGeometry(pointX: number, pointY: number) {
     const svg = svgRef.current;
 
     if (!svg) {
@@ -618,7 +685,8 @@ function Sparkline({
           ? "left"
           : "right";
 
-    setCalloutHorizontal((current) => current === resolvedSide ? current : resolvedSide);
+    const verticalSide = pointY < height / 2 ? "top" : "bottom";
+    scheduleCalloutAnchor(`${verticalSide}-${resolvedSide}` as CalloutAnchor);
   }
 
   function selectNearestPoint(clientX: number, clientY: number) {
@@ -637,7 +705,7 @@ function Sparkline({
       Math.abs(candidate.x - chartPoint.x) < Math.abs(best.x - chartPoint.x) ? candidate : best
     );
 
-    updateCalloutGeometry(nearest.x);
+    updateCalloutGeometry(nearest.x, nearest.y);
     setActiveTime((current) => current === nearest.point.time ? current : nearest.point.time);
   }
 
@@ -645,7 +713,7 @@ function Sparkline({
     const point = points[Math.max(0, Math.min(points.length - 1, index))];
 
     if (point) {
-      updateCalloutGeometry(point.x);
+      updateCalloutGeometry(point.x, point.y);
       setActiveTime(point.point.time);
     }
   }
@@ -669,7 +737,7 @@ function Sparkline({
             selectPointAt(points.length - 1);
           }
         }}
-        onBlur={() => setActiveTime(null)}
+        onBlur={clearActiveSelection}
         onKeyDown={(event) => {
           if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
             event.preventDefault();
@@ -679,7 +747,7 @@ function Sparkline({
             event.preventDefault();
             selectPointAt(event.key === "Home" ? 0 : points.length - 1);
           } else if (event.key === "Escape") {
-            setActiveTime(null);
+            clearActiveSelection();
             event.currentTarget.blur();
           }
         }}
@@ -700,7 +768,7 @@ function Sparkline({
         }}
         onPointerLeave={(event) => {
           if (event.pointerType === "mouse") {
-            setActiveTime(null);
+            clearActiveSelection();
           }
         }}
         onDragStart={(event) => event.preventDefault()}
@@ -788,7 +856,7 @@ function Sparkline({
         {activePoint ? (
           <div
             id={tooltipId}
-            className={`chart-callout ${calloutAnchor}`}
+            className={`chart-callout ${displayedAnchor}`}
             role="tooltip"
             style={{ top: `${(leaderAnchorY / height) * 100}%` }}
           >
@@ -1155,6 +1223,119 @@ function IndexDialog({
   );
 }
 
+function SpaceDialog({
+  spaces,
+  guilds,
+  activeSpaceId,
+  loading,
+  onSelect,
+  onCreate,
+  onClose
+}: {
+  spaces: SpaceSummary[];
+  guilds: DiscordGuild[];
+  activeSpaceId: string | null;
+  loading: boolean;
+  onSelect: (spaceId: string) => void;
+  onCreate: (input: { name: string; kind: SpaceKind; guildId: string | null }) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState<SpaceKind>("private");
+  const [guildId, setGuildId] = useState(guilds[0]?.id ?? "");
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState("");
+
+  async function createSpace() {
+    if (!name.trim()) {
+      setError("スペース名を入力してください。");
+      return;
+    }
+    if (kind === "discord_guild" && !guildId) {
+      setError("Discordサーバーを選択してください。");
+      return;
+    }
+
+    setCreating(true);
+    setError("");
+    try {
+      await onCreate({ name: name.trim(), kind, guildId: kind === "discord_guild" ? guildId : null });
+      setName("");
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "スペースを作成できませんでした。");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="modal-panel space-modal" role="dialog" aria-modal="true" aria-label="スペース管理">
+        <header className="modal-header">
+          <div>
+            <span className="eyebrow">Workspace routing</span>
+            <h2>スペースを選択</h2>
+            <p>個人用スペース、または所属Discordサーバーの共有スペースへ移動できます。</p>
+          </div>
+          <button className="icon-button" aria-label="閉じる" onClick={onClose}><X size={18} /></button>
+        </header>
+
+        <div className="space-list" aria-label="利用可能なスペース">
+          {spaces.map((space) => (
+            <button
+              key={space.id}
+              className={`space-list-item ${space.id === activeSpaceId ? "active" : ""}`}
+              onClick={() => {
+                onSelect(space.id);
+                onClose();
+              }}
+            >
+              {space.kind === "private" ? <LockKeyhole size={17} /> : <Server size={17} />}
+              <span>
+                <strong>{space.name}</strong>
+                <small>{space.kind === "private" ? "プライベート" : space.guildName}</small>
+              </span>
+              <small>{space.role === "owner" ? "Owner" : "Member"}</small>
+            </button>
+          ))}
+          {!spaces.length && !loading ? <p className="empty-space-message">まだスペースがありません。</p> : null}
+        </div>
+
+        <div className="space-create-panel">
+          <div>
+            <span className="eyebrow">New space</span>
+            <h3>スペースを追加</h3>
+          </div>
+          <label>
+            <span>種類</span>
+            <select value={kind} onChange={(event) => setKind(event.target.value as SpaceKind)}>
+              <option value="private">プライベート</option>
+              <option value="discord_guild" disabled={!guilds.length}>Discordサーバー</option>
+            </select>
+          </label>
+          {kind === "discord_guild" ? (
+            <label>
+              <span>Discordサーバー</span>
+              <select value={guildId} onChange={(event) => setGuildId(event.target.value)}>
+                {guilds.map((guild) => <option key={guild.id} value={guild.id}>{guild.name}</option>)}
+              </select>
+            </label>
+          ) : null}
+          <label>
+            <span>スペース名</span>
+            <input value={name} maxLength={60} placeholder="例: 長期投資" onChange={(event) => setName(event.target.value)} />
+          </label>
+          {error ? <p className="form-error">{error}</p> : null}
+          <button className="primary-button" disabled={creating || loading} onClick={() => void createSpace()}>
+            <Plus size={17} />
+            {creating ? "作成中" : "スペースを作成"}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function WatchlistApp() {
   const [availableInstruments, setAvailableInstruments] = useState<Instrument[]>(defaultInstruments);
   const [cards, setCards] = useState<WatchCard[]>(initialWatchCards);
@@ -1173,6 +1354,11 @@ export function WatchlistApp() {
   const [snapshotError, setSnapshotError] = useState(false);
   const [marketRefreshNonce, setMarketRefreshNonce] = useState(0);
   const [sessionUser, setSessionUser] = useState<User | null>(null);
+  const [spaces, setSpaces] = useState<SpaceSummary[]>([]);
+  const [discordGuilds, setDiscordGuilds] = useState<DiscordGuild[]>([]);
+  const [activeSpaceId, setActiveSpaceId] = useState<string | null>(null);
+  const [spacesLoading, setSpacesLoading] = useState(false);
+  const [spaceDialogOpen, setSpaceDialogOpen] = useState(false);
   const [workspaceStatus, setWorkspaceStatus] = useState<"local" | "connecting" | "synced" | "error">("local");
   const [toast, setToast] = useState("");
   const layoutLoaded = useRef(false);
@@ -1181,6 +1367,7 @@ export function WatchlistApp() {
   const currentLayoutRef = useRef<SavedLayout | null>(null);
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const supabaseReady = isSupabaseBrowserConfigured();
+  const activeSpace = spaces.find((space) => space.id === activeSpaceId) ?? null;
 
   currentLayoutRef.current = createSavedLayout({
     instruments: availableInstruments,
@@ -1201,6 +1388,90 @@ export function WatchlistApp() {
     if (message) {
       setToast(message);
     }
+  }
+
+  function resetToDefaultLayout() {
+    setAvailableInstruments(defaultInstruments);
+    setCards(initialWatchCards);
+    setCustomIndexes(defaultIndexes);
+    setCompactView(false);
+    setActiveTab("ALL");
+    lastSyncedLayoutFingerprint.current = "";
+  }
+
+  function switchSpace(spaceId: string, showMessage = true) {
+    if (spaceId === activeSpaceId) {
+      return;
+    }
+
+    remoteSyncReady.current = false;
+    lastSyncedLayoutFingerprint.current = "";
+    setWorkspaceStatus("connecting");
+    setActiveSpaceId(spaceId);
+
+    try {
+      window.localStorage.setItem(activeSpaceStorageKey, spaceId);
+      const localLayout =
+        readSavedLayout(window.localStorage, spaceLayoutStorageKey(spaceId)) ??
+        (!activeSpaceId ? readSavedLayout(window.localStorage) : null);
+      if (localLayout) {
+        applySharedLayout(localLayout);
+      } else {
+        resetToDefaultLayout();
+      }
+    } catch {
+      resetToDefaultLayout();
+    }
+
+    if (showMessage) {
+      const destination = spaces.find((space) => space.id === spaceId);
+      setToast(destination ? `${destination.name}へ移動しました` : "スペースを切り替えました");
+    }
+  }
+
+  async function loadSpaces(preferredSpaceId?: string) {
+    setSpacesLoading(true);
+    try {
+      const response = await fetch("/api/spaces", { cache: "no-store" });
+      const body = (await response.json()) as SpacesResponse & { error?: string };
+      if (!response.ok) {
+        throw new Error(body.error ?? "スペース一覧を取得できませんでした。");
+      }
+
+      setSpaces(body.spaces);
+      setDiscordGuilds(body.guilds);
+
+      const storedSpaceId = preferredSpaceId ?? window.localStorage.getItem(activeSpaceStorageKey);
+      const nextSpace = body.spaces.find((space) => space.id === storedSpaceId) ?? body.spaces[0];
+      if (nextSpace) {
+        switchSpace(nextSpace.id, false);
+      } else {
+        remoteSyncReady.current = false;
+        setActiveSpaceId(null);
+        setWorkspaceStatus("local");
+        setSpaceDialogOpen(true);
+      }
+    } catch (error) {
+      setWorkspaceStatus("error");
+      setToast(error instanceof Error ? error.message : "スペース一覧を取得できませんでした。");
+    } finally {
+      setSpacesLoading(false);
+    }
+  }
+
+  async function createSpace(input: { name: string; kind: SpaceKind; guildId: string | null }) {
+    const response = await fetch("/api/spaces", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input)
+    });
+    const body = (await response.json()) as { space?: SpaceSummary; error?: string };
+    if (!response.ok || !body.space) {
+      throw new Error(body.error ?? "スペースを作成できませんでした。");
+    }
+
+    await loadSpaces(body.space.id);
+    setToast(`${body.space.name}を作成しました`);
   }
 
   useEffect(() => {
@@ -1257,7 +1528,19 @@ export function WatchlistApp() {
   }, [supabase]);
 
   useEffect(() => {
-    if (!supabase || !sessionUser || !layoutLoaded.current) {
+    if (!sessionUser) {
+      setSpaces([]);
+      setDiscordGuilds([]);
+      setActiveSpaceId(null);
+      remoteSyncReady.current = false;
+      return;
+    }
+
+    void loadSpaces();
+  }, [sessionUser?.id]);
+
+  useEffect(() => {
+    if (!supabase || !sessionUser || !activeSpaceId || !layoutLoaded.current) {
       remoteSyncReady.current = false;
       setWorkspaceStatus("local");
       return;
@@ -1269,14 +1552,14 @@ export function WatchlistApp() {
     setWorkspaceStatus("connecting");
 
     const channel = client
-      .channel(`workspace:${sharedWorkspaceKey}`)
+      .channel(`space:${activeSpaceId}`)
       .on(
         "postgres_changes",
         {
           event: "UPDATE",
           schema: "public",
-          table: "shared_workspace_state",
-          filter: `workspace_key=eq.${sharedWorkspaceKey}`
+          table: "space_state",
+          filter: `space_id=eq.${activeSpaceId}`
         },
         (payload) => {
           const remoteLayout = parseSavedLayout((payload.new as { layout?: unknown }).layout);
@@ -1297,9 +1580,9 @@ export function WatchlistApp() {
 
     async function loadSharedWorkspace() {
       const { data, error } = await client
-        .from("shared_workspace_state")
+        .from("space_state")
         .select("layout, revision, updated_at")
-        .eq("workspace_key", sharedWorkspaceKey)
+        .eq("space_id", activeSpaceId)
         .maybeSingle();
 
       if (error) {
@@ -1313,14 +1596,14 @@ export function WatchlistApp() {
       } else if (currentLayoutRef.current) {
         const initialLayout = currentLayoutRef.current;
         const { error: updateError } = await client
-          .from("shared_workspace_state")
+          .from("space_state")
           .update({
             layout: initialLayout,
             revision: Date.now(),
             updated_by: userId,
             updated_at: new Date().toISOString()
           })
-          .eq("workspace_key", sharedWorkspaceKey);
+          .eq("space_id", activeSpaceId);
 
         if (updateError) {
           throw updateError;
@@ -1349,7 +1632,7 @@ export function WatchlistApp() {
       remoteSyncReady.current = false;
       void client.removeChannel(channel);
     };
-  }, [sessionUser?.id, supabase]);
+  }, [activeSpaceId, sessionUser?.id, supabase]);
 
   useEffect(() => {
     if (!layoutLoaded.current) {
@@ -1365,12 +1648,12 @@ export function WatchlistApp() {
     });
 
     try {
-      window.localStorage.setItem(layoutStorageKey, JSON.stringify(layout));
+      window.localStorage.setItem(spaceLayoutStorageKey(activeSpaceId), JSON.stringify(layout));
     } catch {
       setToast("ローカル保存に失敗しました");
     }
 
-    if (!supabase || !sessionUser || !remoteSyncReady.current) {
+    if (!supabase || !sessionUser || !activeSpaceId || !remoteSyncReady.current) {
       return;
     }
 
@@ -1382,14 +1665,14 @@ export function WatchlistApp() {
 
     const timeout = window.setTimeout(() => {
       void supabase
-        .from("shared_workspace_state")
+        .from("space_state")
         .update({
           layout,
           revision: Date.now(),
           updated_by: sessionUser.id,
           updated_at: new Date().toISOString()
         })
-        .eq("workspace_key", sharedWorkspaceKey)
+        .eq("space_id", activeSpaceId)
         .then(({ error }) => {
           if (error) {
             setWorkspaceStatus("error");
@@ -1403,7 +1686,7 @@ export function WatchlistApp() {
     }, 700);
 
     return () => window.clearTimeout(timeout);
-  }, [activeTab, availableInstruments, cards, compactView, customIndexes, sessionUser, supabase]);
+  }, [activeSpaceId, activeTab, availableInstruments, cards, compactView, customIndexes, sessionUser, supabase]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1721,6 +2004,10 @@ export function WatchlistApp() {
     ? "Supabase未設定"
     : !sessionUser
       ? "Discordログイン待ち"
+      : spacesLoading
+        ? "スペース読込中"
+        : !activeSpaceId
+          ? "スペース未選択"
       : workspaceStatus === "connecting"
         ? "共有同期中"
         : workspaceStatus === "synced"
@@ -1739,7 +2026,7 @@ export function WatchlistApp() {
       provider: "discord",
       options: {
         redirectTo: `${window.location.origin}/auth/callback`,
-        scopes: "identify email"
+        scopes: "identify email guilds"
       }
     });
 
@@ -1759,6 +2046,10 @@ export function WatchlistApp() {
       return;
     }
 
+    setSpaces([]);
+    setDiscordGuilds([]);
+    setActiveSpaceId(null);
+    remoteSyncReady.current = false;
     setToast("Discordからログアウトしました");
   }
 
@@ -1837,26 +2128,26 @@ export function WatchlistApp() {
     });
 
     try {
-      window.localStorage.setItem(layoutStorageKey, JSON.stringify(layout));
+      window.localStorage.setItem(spaceLayoutStorageKey(activeSpaceId), JSON.stringify(layout));
     } catch {
       setToast("ローカル保存に失敗しました");
       return;
     }
 
-    if (!supabase || !sessionUser || !remoteSyncReady.current) {
+    if (!supabase || !sessionUser || !activeSpaceId || !remoteSyncReady.current) {
       setToast("ローカルに保存しました。Discordログイン後は共有保存されます。");
       return;
     }
 
     const { error } = await supabase
-      .from("shared_workspace_state")
+      .from("space_state")
       .update({
         layout,
         revision: Date.now(),
         updated_by: sessionUser.id,
         updated_at: new Date().toISOString()
       })
-      .eq("workspace_key", sharedWorkspaceKey);
+      .eq("space_id", activeSpaceId);
 
     if (error) {
       setWorkspaceStatus("error");
@@ -1866,7 +2157,7 @@ export function WatchlistApp() {
 
     lastSyncedLayoutFingerprint.current = layoutFingerprint(layout);
     setWorkspaceStatus("synced");
-    setToast("共有ワークスペースに保存しました");
+    setToast(`${activeSpace?.name ?? "選択中のスペース"}に保存しました`);
   }
 
   return (
@@ -1888,12 +2179,8 @@ export function WatchlistApp() {
           <div className="workspace-overview">
             <div className="workspace-chip">
               <span className="section-index">01</span>
-              <span>Shared Market Desk</span>
-              <div className="avatar-stack" aria-label="team members">
-                <span title="K">K</span>
-                <span title="M">M</span>
-                <span title="R">R</span>
-              </div>
+              {activeSpace?.kind === "private" ? <LockKeyhole size={15} /> : <Server size={15} />}
+              <span>{activeSpace ? `${activeSpace.guildName ? `${activeSpace.guildName} / ` : ""}${activeSpace.name}` : "Local workspace"}</span>
             </div>
             <div className="status-group">
               <div className={`status-pill ${workspaceConnected ? "ready" : ""}`}>
@@ -1907,6 +2194,25 @@ export function WatchlistApp() {
             </div>
           </div>
           <div className="toolbar">
+            {sessionUser ? (
+              <div className="space-switcher">
+                <FolderKanban size={16} />
+                <select
+                  aria-label="スペースを選択"
+                  value={activeSpaceId ?? ""}
+                  disabled={spacesLoading || !spaces.length}
+                  onChange={(event) => switchSpace(event.target.value)}
+                >
+                  {!spaces.length ? <option value="">スペースなし</option> : null}
+                  {spaces.map((space) => (
+                    <option key={space.id} value={space.id}>
+                      {space.kind === "private" ? "個人" : space.guildName} · {space.name}
+                    </option>
+                  ))}
+                </select>
+                <button className="space-manage-button" onClick={() => setSpaceDialogOpen(true)}>管理</button>
+              </div>
+            ) : null}
             <button className="ghost-button" onClick={() => void (sessionUser ? logout() : loginWithDiscord())}>
               <LogIn size={16} />
               {sessionUser ? "Logout" : "Discord"}
@@ -2029,6 +2335,18 @@ export function WatchlistApp() {
               { id: `card-${customIndex.id}`, type: "index", refId: customIndex.id }
             ]);
           }}
+        />
+      ) : null}
+
+      {spaceDialogOpen && sessionUser ? (
+        <SpaceDialog
+          spaces={spaces}
+          guilds={discordGuilds}
+          activeSpaceId={activeSpaceId}
+          loading={spacesLoading}
+          onSelect={switchSpace}
+          onCreate={createSpace}
+          onClose={() => setSpaceDialogOpen(false)}
         />
       ) : null}
 

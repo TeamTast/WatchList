@@ -127,6 +127,14 @@ interface HistoryResponse {
   }>;
 }
 
+interface InstrumentLookupResponse {
+  name: string | null;
+}
+
+interface InstrumentSearchResponse {
+  instruments: Instrument[];
+}
+
 function formatPrice(value: number, currency: MarketCardView["currency"]) {
   if (currency === "JPY") {
     return new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 0 }).format(value);
@@ -272,8 +280,13 @@ function layoutFingerprint(layout: SavedLayout) {
 }
 
 function formatChange(quote: Quote) {
-  const sign = quote.change >= 0 ? "+" : "";
-  return `${sign}${quote.change.toFixed(Math.abs(quote.change) > 10 ? 1 : 2)} / ${sign}${quote.changePercent.toFixed(2)}%`;
+  const valueSign = quote.change >= 0 ? "+" : "";
+  const percentSign = quote.changePercent >= 0 ? "+" : "";
+
+  return {
+    value: `${valueSign}${quote.change.toFixed(Math.abs(quote.change) > 10 ? 1 : 2)}`,
+    percent: `${percentSign}${quote.changePercent.toFixed(2)}%`
+  };
 }
 
 function classForChange(value: number) {
@@ -388,12 +401,14 @@ function createInstrumentFromInput(input: string): Instrument | null {
     };
   }
 
-  if (/^\d{4}$/.test(raw)) {
+  // Tokyo Stock Exchange codes are usually four digits, but recent listings can
+  // use a three-digit code followed by a letter (for example, Kioxia: 285A).
+  if (/^(?:\d{4}|\d{3}[A-Z])$/.test(raw)) {
     return {
       id: `jp-${raw}`,
       symbol: raw,
       providerSymbol: `${raw}.TSE`,
-      name: `${raw}.T`,
+      name: raw,
       assetClass: "jp_equity",
       market: "JP",
       currency: "JPY"
@@ -413,6 +428,63 @@ function createInstrumentFromInput(input: string): Instrument | null {
   }
 
   return null;
+}
+
+function EditableCardName({ name, onRename }: { name: string; onRename: (name: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name);
+
+  useEffect(() => {
+    if (!editing) {
+      setDraft(name);
+    }
+  }, [editing, name]);
+
+  function save() {
+    const nextName = draft.trim();
+    setEditing(false);
+
+    if (nextName && nextName !== name) {
+      onRename(nextName);
+    }
+  }
+
+  if (editing) {
+    return (
+      <input
+        className="card-name-input"
+        aria-label="銘柄名"
+        autoFocus
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={save}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing) {
+            return;
+          }
+
+          if (event.key === "Enter") {
+            event.currentTarget.blur();
+          }
+
+          if (event.key === "Escape") {
+            setDraft(name);
+            setEditing(false);
+          }
+        }}
+      />
+    );
+  }
+
+  return (
+    <span
+      className="card-name"
+      title="ダブルクリックで名前を変更"
+      onDoubleClick={() => setEditing(true)}
+    >
+      {name}
+    </span>
+  );
 }
 
 function reorderCards(cards: WatchCard[], activeId: string, overId: string) {
@@ -444,11 +516,13 @@ function formatSeriesTime(time: number) {
 function Sparkline({
   series,
   tone,
-  currency
+  currency,
+  previousClose
 }: {
   series: SeriesPoint[];
   tone: "positive" | "negative" | "neutral";
   currency: MarketCardView["currency"];
+  previousClose: number;
 }) {
   const width = 420;
   const height = 128;
@@ -456,7 +530,9 @@ function Sparkline({
   const tooltipId = useId();
   const svgRef = useRef<SVGSVGElement>(null);
   const touchActive = useRef(false);
+  const leaderScaleRatio = useRef(1);
   const [activeTime, setActiveTime] = useState<number | null>(null);
+  const [calloutHorizontal, setCalloutHorizontal] = useState<"left" | "right">("right");
   const orderedSeries = useMemo(() => {
     const pointsByTime = new Map<number, SeriesPoint>();
 
@@ -472,6 +548,10 @@ function Sparkline({
   const min = values.length ? Math.min(...values) : 0;
   const max = values.length ? Math.max(...values) : 0;
   const range = max - min || 1;
+  const isFlatSeries = max === min;
+  const valueToY = (value: number) => isFlatSeries
+    ? height / 2
+    : height - padding - ((value - min) / range) * (height - padding * 2);
   const minTime = orderedSeries[0]?.time ?? 0;
   const maxTime = orderedSeries.at(-1)?.time ?? minTime;
   const timeRange = maxTime - minTime;
@@ -480,7 +560,7 @@ function Sparkline({
     x: timeRange
       ? padding + ((point.time - minTime) / timeRange) * (width - padding * 2)
       : width / 2,
-    y: height - padding - ((point.value - min) / range) * (height - padding * 2)
+    y: valueToY(point.value)
   }));
   const line = points
     .map(({ x, y }, index) => `${index === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`)
@@ -493,13 +573,53 @@ function Sparkline({
   const activePoint = activeIndex >= 0 ? points[activeIndex] : null;
   const terminalPoint = points.at(-1) ?? null;
   const fallbackPoint = activePoint ?? terminalPoint;
-  const tooltipAlign = activePoint
-    ? activePoint.x < width * 0.3
-      ? "start"
-      : activePoint.x > width * 0.7
-        ? "end"
-        : "center"
-    : "center";
+  const calloutVertical = activePoint && activePoint.y < height / 2 ? "top" : "bottom";
+  const calloutAnchor = `${calloutVertical}-${calloutHorizontal}`;
+  const leaderAnchorY = calloutVertical === "top" ? 24 : height - 24;
+  const leaderEndX = calloutHorizontal === "left" ? -20 : width + 20;
+  const leaderDirection = calloutHorizontal === "left" ? -1 : 1;
+  const desiredElbowX = activePoint
+    ? activePoint.x + leaderDirection * Math.abs(leaderAnchorY - activePoint.y) / Math.max(leaderScaleRatio.current, 0.01)
+    : 0;
+  const leaderElbowX = calloutHorizontal === "left"
+    ? Math.max(leaderEndX, desiredElbowX)
+    : Math.min(leaderEndX, desiredElbowX);
+  const showPreviousClose = points.length > 0
+    && Number.isFinite(previousClose)
+    && previousClose >= min
+    && previousClose <= max;
+  const previousCloseY = valueToY(previousClose);
+
+  function updateCalloutGeometry(pointX: number) {
+    const svg = svgRef.current;
+
+    if (!svg) {
+      return;
+    }
+
+    const bounds = svg.getBoundingClientRect();
+    const scaleX = bounds.width / width;
+    const scaleY = bounds.height / height;
+    leaderScaleRatio.current = scaleY ? scaleX / scaleY : 1;
+
+    const preferredSide = pointX < width / 2 ? "left" : "right";
+    const calloutWidth = 174;
+    const leftFits = bounds.left - calloutWidth >= 8;
+    const rightFits = bounds.right + calloutWidth <= window.innerWidth - 8;
+    const resolvedSide = preferredSide === "left"
+      ? leftFits
+        ? "left"
+        : rightFits
+          ? "right"
+          : "left"
+      : rightFits
+        ? "right"
+        : leftFits
+          ? "left"
+          : "right";
+
+    setCalloutHorizontal((current) => current === resolvedSide ? current : resolvedSide);
+  }
 
   function selectNearestPoint(clientX: number, clientY: number) {
     const svg = svgRef.current;
@@ -517,6 +637,7 @@ function Sparkline({
       Math.abs(candidate.x - chartPoint.x) < Math.abs(best.x - chartPoint.x) ? candidate : best
     );
 
+    updateCalloutGeometry(nearest.x);
     setActiveTime((current) => current === nearest.point.time ? current : nearest.point.time);
   }
 
@@ -524,16 +645,13 @@ function Sparkline({
     const point = points[Math.max(0, Math.min(points.length - 1, index))];
 
     if (point) {
+      updateCalloutGeometry(point.x);
       setActiveTime(point.point.time);
     }
   }
 
   return (
     <figure className="chart-frame">
-      <figcaption className="chart-caption">
-        <span>Trace / session</span>
-        <span>{orderedSeries.length} pt</span>
-      </figcaption>
       <div
         className="chart-plot"
         role="slider"
@@ -591,6 +709,15 @@ function Sparkline({
         <span className="chart-axis chart-axis-x" aria-hidden="true">X / time · JST</span>
         <svg ref={svgRef} className="sparkline" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
           <title>{`価格推移、${orderedSeries.length}点、安値${formatPrice(min, currency)}、高値${formatPrice(max, currency)}`}</title>
+          {showPreviousClose ? (
+            <line
+              className="sparkline-previous-close"
+              x1={padding}
+              x2={width - padding}
+              y1={previousCloseY}
+              y2={previousCloseY}
+            />
+          ) : null}
           {points.length > 1 ? (
             <>
               <path d={area} fill={`var(--${tone})`} opacity="0.04" />
@@ -641,6 +768,10 @@ function Sparkline({
             <g className="sparkline-crosshair">
               <line x1={activePoint.x} x2={activePoint.x} y1={padding} y2={height - padding} />
               <line x1={padding} x2={width - padding} y1={activePoint.y} y2={activePoint.y} />
+              <path
+                className="sparkline-callout-leader"
+                d={`M${activePoint.x},${activePoint.y} L${leaderElbowX},${leaderAnchorY} H${leaderEndX}`}
+              />
               <rect
                 x={activePoint.x - 3.5}
                 y={activePoint.y - 3.5}
@@ -657,13 +788,13 @@ function Sparkline({
         {activePoint ? (
           <div
             id={tooltipId}
-            className={`chart-tooltip ${tooltipAlign}`}
+            className={`chart-callout ${calloutAnchor}`}
             role="tooltip"
-            style={{ left: `${(activePoint.x / width) * 100}%` }}
+            style={{ top: `${(leaderAnchorY / height) * 100}%` }}
           >
-            <span>Time / JST</span>
-            <strong>{formatSeriesTime(activePoint.point.time)}</strong>
-            <span>Price / {currency === "PAIR" ? "Index" : currency}</span>
+            <span>Time</span>
+            <strong>{formatSeriesTime(activePoint.point.time)} JST</strong>
+            <span>Price</span>
             <strong>{formatPrice(activePoint.point.value, currency)}</strong>
           </div>
         ) : null}
@@ -676,6 +807,7 @@ function MarketCard({
   card,
   dragging,
   onRemove,
+  onRename,
   onDragStart,
   onDragEnter,
   onDragEnd
@@ -683,11 +815,13 @@ function MarketCard({
   card: MarketCardView;
   dragging: boolean;
   onRemove: (id: string) => void;
+  onRename: (id: string, name: string) => void;
   onDragStart: (id: string) => void;
   onDragEnter: (id: string) => void;
   onDragEnd: () => void;
 }) {
   const changeClass = classForChange(card.quote?.change ?? 0);
+  const formattedChange = card.quote ? formatChange(card.quote) : null;
 
   return (
     <article
@@ -711,11 +845,23 @@ function MarketCard({
           <GripVertical size={17} />
         </button>
         <div className="symbol-block">
-          <div className="symbol-row">
-            <strong>{card.symbol}</strong>
-            <span className={`market-pill ${card.market.toLowerCase()}`}>{marketLabels[card.market]}</span>
-          </div>
-          <span>{card.name}</span>
+          {card.assetClass === "custom_index" ? (
+            <>
+              <div className="symbol-row">
+                <strong>{card.symbol}</strong>
+                <span className={`market-pill ${card.market.toLowerCase()}`}>{marketLabels[card.market]}</span>
+              </div>
+              <EditableCardName name={card.name} onRename={(name) => onRename(card.id, name)} />
+            </>
+          ) : (
+            <>
+              <div className="symbol-row">
+                <EditableCardName name={card.name} onRename={(name) => onRename(card.id, name)} />
+                <span className={`market-pill ${card.market.toLowerCase()}`}>{marketLabels[card.market]}</span>
+              </div>
+              <span className="ticker-code">{card.symbol}</span>
+            </>
+          )}
         </div>
         <button className="icon-button danger" title="削除" onClick={() => onRemove(card.id)}>
           <Trash2 size={16} />
@@ -726,7 +872,6 @@ function MarketCard({
         <>
           <div className="price-row">
             <div className="price-metric">
-              <span className="metric-label">Last / {card.currency === "PAIR" ? "Index" : card.currency}</span>
               <div>
                 <span className="price">{formatPrice(card.quote.price, card.currency)}</span>
                 <span className="currency">{card.currency === "PAIR" ? "" : card.currency}</span>
@@ -734,11 +879,20 @@ function MarketCard({
             </div>
             <div className="change-metric">
               <span className="metric-label">Δ / day</span>
-              <span className={`change ${changeClass}`}>{formatChange(card.quote)}</span>
+              <span className={`change ${changeClass}`}>
+                <span>{formattedChange?.value}</span>
+                <span className="change-divider" aria-hidden="true">/</span>
+                <span>{formattedChange?.percent}</span>
+              </span>
             </div>
           </div>
 
-          <Sparkline series={card.series} tone={changeClass} currency={card.currency} />
+          <Sparkline
+            series={card.series}
+            tone={changeClass}
+            currency={card.currency}
+            previousClose={card.quote.previousClose}
+          />
         </>
       ) : (
         <div className="no-data-panel">
@@ -749,12 +903,12 @@ function MarketCard({
 
       <footer className="card-meta">
         <span>
-          Type / {assetLabels[card.assetClass]} · Src / {card.quote ? sourceLabels[card.quote.source] : "No data"}
+          {assetLabels[card.assetClass]} · {card.quote ? sourceLabels[card.quote.source] : "No data"}
         </span>
         {card.quote ? (
           <>
-            <span>Hi / {formatPrice(card.quote.dayHigh, card.currency)}</span>
-            <span>Lo / {formatPrice(card.quote.dayLow, card.currency)}</span>
+            <span>Hi {formatPrice(card.quote.dayHigh, card.currency)}</span>
+            <span>Lo {formatPrice(card.quote.dayLow, card.currency)}</span>
           </>
         ) : null}
       </footer>
@@ -774,19 +928,92 @@ function AddInstrumentDialog({
   onAdd: (instrument: Instrument) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [nameLookup, setNameLookup] = useState<{ providerSymbol: string; name: string | null } | null>(null);
+  const [nameSearchResults, setNameSearchResults] = useState<Instrument[]>([]);
   const customInstrument = createInstrumentFromInput(query);
-  const canAddCustom =
-    customInstrument &&
-    !existingInstrumentIds.includes(customInstrument.id) &&
-    !availableInstruments.some((instrument) => instrument.providerSymbol === customInstrument.providerSymbol);
-  const candidates = availableInstruments.filter((instrument) => {
-    if (existingInstrumentIds.includes(instrument.id)) {
-      return false;
+  const isJapaneseCustomInstrument = customInstrument?.assetClass === "jp_equity";
+
+  useEffect(() => {
+    if (!isJapaneseCustomInstrument || !customInstrument) {
+      setNameLookup(null);
+      return;
     }
 
-    const haystack = `${instrument.symbol} ${instrument.name} ${instrument.providerSymbol}`.toLowerCase();
-    return haystack.includes(query.toLowerCase());
-  });
+    const controller = new AbortController();
+    let active = true;
+    const timeout = window.setTimeout(() => {
+      void fetch(`/api/market/instrument?providerSymbol=${encodeURIComponent(customInstrument.providerSymbol)}`, {
+        signal: controller.signal
+      })
+        .then(async (response) => {
+          if (!response.ok) {
+            return null;
+          }
+
+          return (await response.json()) as InstrumentLookupResponse;
+        })
+        .then((result) => {
+          if (active) {
+            setNameLookup({ providerSymbol: customInstrument.providerSymbol, name: result?.name ?? null });
+          }
+        })
+        .catch(() => {
+          if (active && !controller.signal.aborted) {
+            setNameLookup({ providerSymbol: customInstrument.providerSymbol, name: null });
+          }
+        });
+    }, 250);
+
+    return () => {
+      active = false;
+      controller.abort();
+      window.clearTimeout(timeout);
+    };
+  }, [customInstrument?.providerSymbol, isJapaneseCustomInstrument]);
+
+  useEffect(() => {
+    const searchQuery = query.trim();
+
+    if (searchQuery.length < 2) {
+      setNameSearchResults([]);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      void fetch(`/api/market/instrument?query=${encodeURIComponent(searchQuery)}`, { signal: controller.signal })
+        .then(async (response) => (response.ok ? ((await response.json()) as InstrumentSearchResponse) : null))
+        .then((result) => setNameSearchResults(result?.instruments ?? []))
+        .catch(() => {
+          if (!controller.signal.aborted) {
+            setNameSearchResults([]);
+          }
+        });
+    }, 300);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeout);
+    };
+  }, [query]);
+
+  const resolvedName = nameLookup?.providerSymbol === customInstrument?.providerSymbol ? nameLookup?.name ?? null : null;
+  const instrumentToAdd = customInstrument && resolvedName ? { ...customInstrument, name: resolvedName } : customInstrument;
+  const canAddCustom =
+    instrumentToAdd &&
+    !existingInstrumentIds.includes(instrumentToAdd.id) &&
+    !availableInstruments.some((instrument) => instrument.providerSymbol === instrumentToAdd.providerSymbol);
+  const candidates = Array.from(
+    new Map(
+      [...availableInstruments, ...nameSearchResults]
+        .filter((instrument) => !existingInstrumentIds.includes(instrument.id))
+        .filter((instrument) => {
+          const haystack = `${instrument.symbol} ${instrument.name} ${instrument.providerSymbol}`.toLowerCase();
+          return haystack.includes(query.toLowerCase()) || nameSearchResults.includes(instrument);
+        })
+        .map((instrument) => [instrument.providerSymbol, instrument])
+    ).values()
+  );
 
   return (
     <div className="modal-backdrop" role="presentation">
@@ -805,7 +1032,7 @@ function AddInstrumentDialog({
           <Search size={17} />
           <input
             autoFocus
-            placeholder="AAPL, 7203, USDJPY..."
+            placeholder="AAPL, キオクシア, 7203, USDJPY..."
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
@@ -816,16 +1043,16 @@ function AddInstrumentDialog({
             <button
               className="candidate-row create-row"
               onClick={() => {
-                onAdd(customInstrument);
+                onAdd(instrumentToAdd);
                 onClose();
               }}
             >
               <span>
-                <strong>{customInstrument.symbol}</strong>
-                <small>{customInstrument.providerSymbol} を追加</small>
+                <strong>{instrumentToAdd.symbol}</strong>
+                <small>{resolvedName ?? `${instrumentToAdd.providerSymbol} を追加`}</small>
               </span>
-              <span className={`market-pill ${customInstrument.market.toLowerCase()}`}>
-                {marketLabels[customInstrument.market]}
+              <span className={`market-pill ${instrumentToAdd.market.toLowerCase()}`}>
+                {marketLabels[instrumentToAdd.market]}
               </span>
             </button>
           ) : null}
@@ -1504,7 +1731,7 @@ export function WatchlistApp() {
 
   async function loginWithDiscord() {
     if (!supabase) {
-      setToast("Supabase環境変数を設定するとDiscord OAuthが有効になります。");
+      setToast("SupabaseのプロジェクトURLとPublishable keyを設定するとDiscord OAuthが有効になります。");
       return;
     }
 
@@ -1542,6 +1769,50 @@ export function WatchlistApp() {
     }
 
     await document.documentElement.requestFullscreen();
+  }
+
+  function renameCard(id: string, name: string) {
+    setAvailableInstruments((current) =>
+      current.map((instrument) => (instrument.id === id ? { ...instrument, name } : instrument))
+    );
+    setCustomIndexes((current) =>
+      current.map((customIndex) => (customIndex.id === id ? { ...customIndex, name } : customIndex))
+    );
+  }
+
+  function addInstrument(instrument: Instrument) {
+    setAvailableInstruments((current) =>
+      current.some((item) => item.id === instrument.id || item.providerSymbol === instrument.providerSymbol)
+        ? current
+        : [...current, instrument]
+    );
+    setHistoryErrors((current) => {
+      const next = { ...current };
+      delete next[instrument.id];
+      return next;
+    });
+    setCards((current) =>
+      current.some((card) => card.refId === instrument.id)
+        ? current
+        : [...current, { id: `card-${instrument.id}`, type: "instrument", refId: instrument.id }]
+    );
+
+    if (instrument.assetClass === "jp_equity" && instrument.name === instrument.symbol) {
+      void fetch(`/api/market/instrument?providerSymbol=${encodeURIComponent(instrument.providerSymbol)}`)
+        .then(async (response) => (response.ok ? ((await response.json()) as InstrumentLookupResponse) : null))
+        .then((result) => {
+          if (!result?.name) {
+            return;
+          }
+
+          setAvailableInstruments((current) =>
+            current.map((item) => (item.id === instrument.id ? { ...item, name: result.name! } : item))
+          );
+        })
+        .catch(() => {
+          // A name lookup is optional; the card remains editable when it fails.
+        });
+    }
   }
 
   function toggleTheme() {
@@ -1724,6 +1995,7 @@ export function WatchlistApp() {
                 current.filter((watchCard) => !(watchCard.refId === id || watchCard.id === id))
               )
             }
+            onRename={renameCard}
             onDragStart={(id) => setDraggingId(id)}
             onDragEnter={(overId) => {
               if (!draggingId || draggingId === overId) {
@@ -1742,23 +2014,7 @@ export function WatchlistApp() {
           availableInstruments={availableInstruments}
           existingInstrumentIds={existingInstrumentIds}
           onClose={() => setAddOpen(false)}
-          onAdd={(instrument) => {
-            setAvailableInstruments((current) =>
-              current.some((item) => item.id === instrument.id || item.providerSymbol === instrument.providerSymbol)
-                ? current
-                : [...current, instrument]
-            );
-            setHistoryErrors((current) => {
-              const next = { ...current };
-              delete next[instrument.id];
-              return next;
-            });
-            setCards((current) =>
-              current.some((card) => card.refId === instrument.id)
-                ? current
-                : [...current, { id: `card-${instrument.id}`, type: "instrument", refId: instrument.id }]
-            );
-          }}
+          onAdd={addInstrument}
         />
       ) : null}
 

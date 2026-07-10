@@ -1,5 +1,5 @@
 import { toFinnhubSymbol } from "@/lib/market/finnhub";
-import type { Quote, SeriesPoint } from "@/lib/market/types";
+import type { Instrument, Quote, SeriesPoint } from "@/lib/market/types";
 
 interface EodhdResponse {
   code?: string;
@@ -29,6 +29,9 @@ interface YahooChartResponse {
       meta?: {
         chartPreviousClose?: number;
         previousClose?: number;
+        longName?: string;
+        shortName?: string;
+        displayName?: string;
       };
       timestamp?: number[];
       indicators?: {
@@ -41,6 +44,16 @@ interface YahooChartResponse {
     }>;
     error?: unknown;
   };
+}
+
+interface YahooSearchResponse {
+  quotes?: Array<{
+    symbol?: string;
+    shortname?: string;
+    longname?: string;
+    displayName?: string;
+    quoteType?: string;
+  }>;
 }
 
 export interface MarketHistory {
@@ -63,6 +76,108 @@ export async function getMarketSnapshots(providerSymbols: string[]): Promise<Quo
   }
 
   return [];
+}
+
+export async function getInstrumentName(providerSymbol: string): Promise<string | null> {
+  const symbol = toYahooSymbol(providerSymbol);
+  const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
+  url.searchParams.set("range", "1d");
+  url.searchParams.set("interval", "1d");
+
+  try {
+    const response = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 WatchList/1.0" },
+      next: { revalidate: 86_400 }
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const meta = ((await response.json()) as YahooChartResponse).chart?.result?.[0]?.meta;
+    const name = meta?.longName ?? meta?.shortName ?? meta?.displayName;
+    return typeof name === "string" && name.trim() ? name.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function searchInstrumentsByName(query: string): Promise<Instrument[]> {
+  const url = new URL("https://query1.finance.yahoo.com/v1/finance/search");
+  url.searchParams.set("q", query);
+  url.searchParams.set("quotesCount", "8");
+  url.searchParams.set("newsCount", "0");
+
+  try {
+    const response = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 WatchList/1.0" },
+      next: { revalidate: 3_600 }
+    });
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const quotes = ((await response.json()) as YahooSearchResponse).quotes ?? [];
+    return quotes
+      .map((quote) => instrumentFromYahooSearchResult(quote))
+      .filter((instrument): instrument is Instrument => instrument !== null);
+  } catch {
+    return [];
+  }
+}
+
+function instrumentFromYahooSearchResult(
+  quote: NonNullable<YahooSearchResponse["quotes"]>[number]
+): Instrument | null {
+  const symbol = quote.symbol?.trim().toUpperCase();
+  const name = quote.longname ?? quote.shortname ?? quote.displayName ?? symbol;
+
+  if (!symbol || !name) {
+    return null;
+  }
+
+  const japanCode = symbol.match(/^(\d{4}|\d{3}[A-Z])\.T$/);
+  if (japanCode) {
+    const code = japanCode[1];
+    return {
+      id: `jp-${code}`,
+      symbol: code,
+      providerSymbol: `${code}.TSE`,
+      name,
+      assetClass: "jp_equity",
+      market: "JP",
+      currency: "JPY"
+    };
+  }
+
+  const fxPair = symbol.match(/^([A-Z]{6})=X$/);
+  if (fxPair) {
+    const pair = fxPair[1];
+    return {
+      id: `fx-${pair.toLowerCase()}`,
+      symbol: `${pair.slice(0, 3)}/${pair.slice(3)}`,
+      providerSymbol: `${pair}.FOREX`,
+      name,
+      assetClass: "fx",
+      market: "FX",
+      currency: "PAIR"
+    };
+  }
+
+  if (quote.quoteType === "EQUITY" && /^[A-Z.]{1,12}$/.test(symbol)) {
+    return {
+      id: `us-${symbol.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      symbol,
+      providerSymbol: `${symbol}.US`,
+      name,
+      assetClass: "us_equity",
+      market: "US",
+      currency: "USD"
+    };
+  }
+
+  return null;
 }
 
 function getFinnhubToken() {

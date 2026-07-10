@@ -1,33 +1,13 @@
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
-
-function getSupabaseServerConfig() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  if (!supabaseUrl || !supabaseAnonKey) {
-    return null;
-  }
-
-  try {
-    const url = new URL(supabaseUrl);
-
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      return null;
-    }
-  } catch {
-    return null;
-  }
-
-  return { supabaseUrl, supabaseAnonKey };
-}
+import { getSupabasePublicConfig } from "@/lib/supabase/config";
 
 export function isSupabaseServerConfigured() {
-  return Boolean(getSupabaseServerConfig());
+  return Boolean(getSupabasePublicConfig());
 }
 
 export async function createSupabaseServerClient() {
-  const config = getSupabaseServerConfig();
+  const config = getSupabasePublicConfig();
 
   if (!config) {
     throw new Error("Supabase is not configured.");
@@ -37,7 +17,7 @@ export async function createSupabaseServerClient() {
 
   return createServerClient(
     config.supabaseUrl,
-    config.supabaseAnonKey,
+    config.supabaseKey,
     {
       cookies: {
         getAll() {

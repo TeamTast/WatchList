@@ -458,7 +458,7 @@ h1 span {
 .market-grid {
   display: grid;
   margin-top: 16px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(350px, 100%), 1fr));
   gap: 1px;
   border: 1px solid var(--line);
   background: var(--line);
@@ -471,8 +471,8 @@ h1 span {
 .market-card {
   position: relative;
   min-width: 0;
-  min-height: 278px;
-  padding: 17px;
+  min-height: 252px;
+  padding: 15px;
   background: var(--surface);
   box-shadow: inset 0 0 0 1px transparent;
   transition:
@@ -504,6 +504,10 @@ h1 span {
   z-index: 1;
   background: var(--surface-raised);
   box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.market-card:has(.chart-callout) {
+  z-index: 5;
 }
 
 .market-card.dragging {
@@ -547,7 +551,9 @@ h1 span {
   white-space: nowrap;
 }
 
-.symbol-row strong {
+.symbol-row strong,
+.symbol-row .card-name,
+.symbol-row .card-name-input {
   min-width: 0;
   font-size: 18px;
   font-weight: 800;
@@ -561,6 +567,38 @@ h1 span {
   color: var(--muted);
   font-size: 11px;
   letter-spacing: 0.015em;
+}
+
+.card-name {
+  cursor: text;
+}
+
+.card-name-input {
+  display: block;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--focus);
+  border-radius: 0;
+  padding: 1px 0 3px;
+  color: var(--text);
+  background: transparent;
+  outline: 0;
+  font: inherit;
+  letter-spacing: -0.025em;
+}
+
+.symbol-row .card-name {
+  margin: 0;
+  color: var(--text);
+}
+
+.ticker-code {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.08em;
 }
 
 .market-pill {
@@ -603,16 +641,21 @@ h1 span {
   align-items: flex-end;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 22px;
+  margin-top: 17px;
 }
 
-.price-metric,
 .change-metric {
   display: grid;
   gap: 7px;
 }
 
+.price-metric {
+  display: block;
+  min-width: 0;
+}
+
 .change-metric {
+  min-width: 0;
   justify-items: end;
   padding-left: 14px;
   border-left: 1px solid var(--line);
@@ -685,36 +728,58 @@ h1 span {
 }
 
 .change-metric .change {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 0.28em;
   border: 0;
   padding: 0;
   background: transparent;
+  font-size: clamp(16px, 1.35vw, 20px);
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  line-height: 0.88;
+}
+
+.change-divider {
+  color: var(--subtle);
+  font-size: 0.72em;
+  font-weight: 650;
+}
+
+.app-shell.compact .price-row {
+  gap: 8px;
+}
+
+.app-shell.compact .change-metric {
+  max-width: 45%;
+  padding-left: 8px;
+}
+
+.app-shell.compact .change-metric .change {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-size: 14px;
+  line-height: 0.92;
+}
+
+.app-shell.compact .change-divider {
+  display: none;
 }
 
 .chart-frame {
-  margin: 14px 0 0;
+  position: relative;
+  margin: 10px 0 0;
   border-top: 1px solid var(--surface-strong);
   border-bottom: 1px solid var(--surface-strong);
 }
 
-.chart-caption {
-  display: flex;
-  min-height: 22px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 4px;
-  border-bottom: 1px solid var(--surface-strong);
-  color: var(--subtle);
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: 0.13em;
-  line-height: 1;
-  text-transform: uppercase;
-}
-
 .chart-plot {
   position: relative;
-  height: 118px;
-  overflow: hidden;
+  height: 136px;
+  overflow: visible;
+  border-bottom: 1px solid var(--surface-strong);
   background-color: color-mix(in srgb, var(--surface-raised) 48%, transparent);
   background-image:
     linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
@@ -729,21 +794,26 @@ h1 span {
   display: block;
   width: 100%;
   height: 100%;
+  overflow: visible;
   pointer-events: none;
 }
 
 .app-shell.compact .chart-plot {
-  height: 80px;
-}
-
-.app-shell.compact .chart-caption {
-  min-height: 18px;
+  height: 94px;
 }
 
 .sparkline-guide {
   opacity: 0.3;
   stroke-dasharray: 2 5;
   stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.sparkline-previous-close {
+  stroke: var(--muted);
+  stroke-dasharray: 4 6;
+  stroke-width: 1;
+  opacity: 0.34;
   vector-effect: non-scaling-stroke;
 }
 
@@ -756,6 +826,13 @@ h1 span {
 .sparkline-crosshair line {
   stroke: var(--line-strong);
   stroke-dasharray: 2 4;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.sparkline-callout-leader {
+  fill: none;
+  stroke: var(--line-strong);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
@@ -784,10 +861,9 @@ h1 span {
   bottom: 4px;
 }
 
-.chart-tooltip {
+.chart-callout {
   display: grid;
   position: absolute;
-  top: 50%;
   z-index: 3;
   width: min(152px, calc(100% - 16px));
   grid-template-columns: auto 1fr;
@@ -796,24 +872,24 @@ h1 span {
   border-left: 3px solid var(--accent);
   padding: 8px 9px;
   color: var(--text);
-  background: var(--surface-raised);
-  box-shadow: 0 9px 26px color-mix(in srgb, var(--bg) 58%, transparent);
+  background: color-mix(in srgb, var(--surface-raised) 84%, transparent);
+  box-shadow: 0 9px 26px color-mix(in srgb, var(--bg) 42%, transparent);
+  backdrop-filter: blur(7px);
+  transform: translateY(-50%);
   pointer-events: none;
 }
 
-.chart-tooltip.start {
-  transform: translate(10px, -50%);
+.chart-callout.top-right,
+.chart-callout.bottom-right {
+  left: calc(100% + 14px);
 }
 
-.chart-tooltip.center {
-  transform: translate(-50%, -50%);
+.chart-callout.top-left,
+.chart-callout.bottom-left {
+  right: calc(100% + 14px);
 }
 
-.chart-tooltip.end {
-  transform: translate(calc(-100% - 10px), -50%);
-}
-
-.chart-tooltip span {
+.chart-callout span {
   align-self: center;
   color: var(--subtle);
   font-size: 7px;
@@ -823,7 +899,7 @@ h1 span {
   text-transform: uppercase;
 }
 
-.chart-tooltip strong {
+.chart-callout strong {
   overflow: hidden;
   font-size: 10px;
   font-weight: 750;
@@ -866,8 +942,8 @@ h1 span {
   grid-template-columns: minmax(0, 1fr) auto auto;
   justify-content: initial;
   gap: 12px;
-  margin-top: 11px;
-  padding-top: 10px;
+  margin-top: 7px;
+  padding-top: 7px;
   border-top: 1px solid var(--surface-strong);
   color: var(--muted);
   font-size: 10px;

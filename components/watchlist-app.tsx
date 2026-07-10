@@ -5,17 +5,19 @@ import {
   GripVertical,
   LogIn,
   Minimize2,
+  Moon,
   Plus,
   RefreshCw,
   Save,
   Search,
   Square,
+  Sun,
   Trash2,
   Wifi,
   WifiOff,
   X
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { buildIndexQuote, buildIndexSeries } from "@/lib/market/index-builder";
 import {
@@ -60,13 +62,41 @@ const assetLabels: Record<AssetClass, string> = {
 const sourceLabels: Record<Quote["source"], string> = {
   mock: "Demo",
   finnhub: "Finnhub",
+  yahoo: "Yahoo chart",
   eodhd: "EODHD",
   massive: "Massive"
 };
 
 const layoutStorageKey = "watchlist.layout.v1";
+const themeStorageKey = "watchlist.theme.v1";
 const sharedWorkspaceKey = "shared-market-desk";
 const snapshotPollIntervalMs = 60_000;
+
+type Theme = "dark" | "light";
+
+function applyDocumentTheme(theme: Theme) {
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#eeede6" : "#090909");
+}
+
+function isUsRegularSession(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+
+  if (values.weekday === "Sat" || values.weekday === "Sun") {
+    return false;
+  }
+
+  const minutes = Number(values.hour) * 60 + Number(values.minute);
+  return minutes >= 9 * 60 + 30 && minutes < 16 * 60;
+}
 
 const initialWatchCards: WatchCard[] = [
   ...defaultWatchCards,
@@ -399,47 +429,246 @@ function reorderCards(cards: WatchCard[], activeId: string, overId: string) {
   return next;
 }
 
-function Sparkline({ series, tone }: { series: SeriesPoint[]; tone: "positive" | "negative" | "neutral" }) {
+function formatSeriesTime(time: number) {
+  return new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(new Date(time));
+}
+
+function Sparkline({
+  series,
+  tone,
+  currency
+}: {
+  series: SeriesPoint[];
+  tone: "positive" | "negative" | "neutral";
+  currency: MarketCardView["currency"];
+}) {
   const width = 420;
   const height = 128;
   const padding = 10;
-  const values = series.map((point) => point.value);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  const tooltipId = useId();
+  const svgRef = useRef<SVGSVGElement>(null);
+  const touchActive = useRef(false);
+  const [activeTime, setActiveTime] = useState<number | null>(null);
+  const orderedSeries = useMemo(() => {
+    const pointsByTime = new Map<number, SeriesPoint>();
+
+    series.forEach((point) => {
+      if (Number.isFinite(point.time) && Number.isFinite(point.value)) {
+        pointsByTime.set(point.time, point);
+      }
+    });
+
+    return Array.from(pointsByTime.values()).sort((a, b) => a.time - b.time);
+  }, [series]);
+  const values = orderedSeries.map((point) => point.value);
+  const min = values.length ? Math.min(...values) : 0;
+  const max = values.length ? Math.max(...values) : 0;
   const range = max - min || 1;
-  const line = series
-    .map((point, index) => {
-      const x = padding + (index / Math.max(series.length - 1, 1)) * (width - padding * 2);
-      const y = height - padding - ((point.value - min) / range) * (height - padding * 2);
-      return `${index === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`;
-    })
+  const minTime = orderedSeries[0]?.time ?? 0;
+  const maxTime = orderedSeries.at(-1)?.time ?? minTime;
+  const timeRange = maxTime - minTime;
+  const points = orderedSeries.map((point) => ({
+    point,
+    x: timeRange
+      ? padding + ((point.time - minTime) / timeRange) * (width - padding * 2)
+      : width / 2,
+    y: height - padding - ((point.value - min) / range) * (height - padding * 2)
+  }));
+  const line = points
+    .map(({ x, y }, index) => `${index === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`)
     .join(" ");
   const area = `${line} L${width - padding},${height - padding} L${padding},${height - padding} Z`;
   const singleY = height / 2;
+  const activeIndex = activeTime === null
+    ? -1
+    : points.findIndex(({ point }) => point.time === activeTime);
+  const activePoint = activeIndex >= 0 ? points[activeIndex] : null;
+  const terminalPoint = points.at(-1) ?? null;
+  const fallbackPoint = activePoint ?? terminalPoint;
+  const tooltipAlign = activePoint
+    ? activePoint.x < width * 0.3
+      ? "start"
+      : activePoint.x > width * 0.7
+        ? "end"
+        : "center"
+    : "center";
+
+  function selectNearestPoint(clientX: number, clientY: number) {
+    const svg = svgRef.current;
+    const matrix = svg?.getScreenCTM();
+
+    if (!svg || !matrix || !points.length) {
+      return;
+    }
+
+    const pointer = svg.createSVGPoint();
+    pointer.x = clientX;
+    pointer.y = clientY;
+    const chartPoint = pointer.matrixTransform(matrix.inverse());
+    const nearest = points.reduce((best, candidate) =>
+      Math.abs(candidate.x - chartPoint.x) < Math.abs(best.x - chartPoint.x) ? candidate : best
+    );
+
+    setActiveTime((current) => current === nearest.point.time ? current : nearest.point.time);
+  }
+
+  function selectPointAt(index: number) {
+    const point = points[Math.max(0, Math.min(points.length - 1, index))];
+
+    if (point) {
+      setActiveTime(point.point.time);
+    }
+  }
 
   return (
-    <svg className="sparkline" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="price chart">
-      {series.length > 1 ? (
-        <>
-          <path d={area} fill={`var(--${tone})`} opacity="0.08" />
-          <path d={line} fill="none" stroke={`var(--${tone})`} strokeLinecap="round" strokeWidth="2" />
-        </>
-      ) : (
-        <>
-          <line
-            x1={padding}
-            x2={width - padding}
-            y1={singleY}
-            y2={singleY}
-            stroke={`var(--${tone})`}
-            strokeDasharray="4 6"
-            strokeOpacity="0.45"
-            strokeWidth="1.5"
-          />
-          <circle cx={width / 2} cy={singleY} fill={`var(--${tone})`} r="4" />
-        </>
-      )}
-    </svg>
+    <figure className="chart-frame">
+      <figcaption className="chart-caption">
+        <span>Trace / session</span>
+        <span>{orderedSeries.length} pt</span>
+      </figcaption>
+      <div
+        className="chart-plot"
+        role="slider"
+        tabIndex={0}
+        aria-label="価格推移の時点"
+        aria-valuemin={0}
+        aria-valuemax={Math.max(points.length - 1, 0)}
+        aria-valuenow={activeIndex >= 0 ? activeIndex : Math.max(points.length - 1, 0)}
+        aria-valuetext={fallbackPoint
+          ? `${formatSeriesTime(fallbackPoint.point.time)} JST、${formatPrice(fallbackPoint.point.value, currency)}${currency === "PAIR" ? "" : ` ${currency}`}`
+          : "価格データなし"}
+        aria-describedby={activePoint ? tooltipId : undefined}
+        onFocus={() => {
+          if (activeTime === null) {
+            selectPointAt(points.length - 1);
+          }
+        }}
+        onBlur={() => setActiveTime(null)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+            event.preventDefault();
+            const currentIndex = activeIndex >= 0 ? activeIndex : points.length - 1;
+            selectPointAt(currentIndex + (event.key === "ArrowLeft" ? -1 : 1));
+          } else if (event.key === "Home" || event.key === "End") {
+            event.preventDefault();
+            selectPointAt(event.key === "Home" ? 0 : points.length - 1);
+          } else if (event.key === "Escape") {
+            setActiveTime(null);
+            event.currentTarget.blur();
+          }
+        }}
+        onPointerDown={(event) => {
+          touchActive.current = event.pointerType === "touch";
+          selectNearestPoint(event.clientX, event.clientY);
+        }}
+        onPointerMove={(event) => {
+          if (event.pointerType !== "touch" || touchActive.current) {
+            selectNearestPoint(event.clientX, event.clientY);
+          }
+        }}
+        onPointerUp={() => {
+          touchActive.current = false;
+        }}
+        onPointerCancel={() => {
+          touchActive.current = false;
+        }}
+        onPointerLeave={(event) => {
+          if (event.pointerType === "mouse") {
+            setActiveTime(null);
+          }
+        }}
+        onDragStart={(event) => event.preventDefault()}
+      >
+        <span className="chart-axis chart-axis-y" aria-hidden="true">Y / price</span>
+        <span className="chart-axis chart-axis-x" aria-hidden="true">X / time · JST</span>
+        <svg ref={svgRef} className="sparkline" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+          <title>{`価格推移、${orderedSeries.length}点、安値${formatPrice(min, currency)}、高値${formatPrice(max, currency)}`}</title>
+          {points.length > 1 ? (
+            <>
+              <path d={area} fill={`var(--${tone})`} opacity="0.04" />
+              <path
+                d={line}
+                fill="none"
+                stroke={`var(--${tone})`}
+                strokeLinecap="square"
+                strokeLinejoin="miter"
+                strokeWidth="1.6"
+                vectorEffect="non-scaling-stroke"
+              />
+            </>
+          ) : points.length === 1 ? (
+            <line
+              x1={padding}
+              x2={width - padding}
+              y1={singleY}
+              y2={singleY}
+              stroke={`var(--${tone})`}
+              strokeDasharray="3 6"
+              strokeOpacity="0.42"
+              strokeWidth="1.4"
+              vectorEffect="non-scaling-stroke"
+            />
+          ) : null}
+          {terminalPoint ? (
+            <>
+              <line
+                className="sparkline-guide"
+                x1={terminalPoint.x}
+                x2={width - padding}
+                y1={terminalPoint.y}
+                y2={terminalPoint.y}
+                stroke={`var(--${tone})`}
+              />
+              <rect
+                className="sparkline-terminal"
+                x={terminalPoint.x - 2.5}
+                y={terminalPoint.y - 2.5}
+                width="5"
+                height="5"
+                stroke={`var(--${tone})`}
+              />
+            </>
+          ) : null}
+          {activePoint ? (
+            <g className="sparkline-crosshair">
+              <line x1={activePoint.x} x2={activePoint.x} y1={padding} y2={height - padding} />
+              <line x1={padding} x2={width - padding} y1={activePoint.y} y2={activePoint.y} />
+              <rect
+                x={activePoint.x - 3.5}
+                y={activePoint.y - 3.5}
+                width="7"
+                height="7"
+                fill="var(--surface)"
+                stroke={`var(--${tone})`}
+                strokeWidth="1.5"
+                vectorEffect="non-scaling-stroke"
+              />
+            </g>
+          ) : null}
+        </svg>
+        {activePoint ? (
+          <div
+            id={tooltipId}
+            className={`chart-tooltip ${tooltipAlign}`}
+            role="tooltip"
+            style={{ left: `${(activePoint.x / width) * 100}%` }}
+          >
+            <span>Time / JST</span>
+            <strong>{formatSeriesTime(activePoint.point.time)}</strong>
+            <span>Price / {currency === "PAIR" ? "Index" : currency}</span>
+            <strong>{formatPrice(activePoint.point.value, currency)}</strong>
+          </div>
+        ) : null}
+      </div>
+    </figure>
   );
 }
 
@@ -463,15 +692,22 @@ function MarketCard({
   return (
     <article
       className={`market-card ${dragging ? "dragging" : ""}`}
-      draggable
-      onDragStart={() => onDragStart(card.id)}
       onDragEnter={() => onDragEnter(card.id)}
       onDragOver={(event) => event.preventDefault()}
       onDragEnd={onDragEnd}
       onDrop={onDragEnd}
     >
       <header className="card-top">
-        <button className="icon-button muted drag-handle" title="並べ替え">
+        <button
+          className="icon-button muted drag-handle"
+          draggable
+          aria-label="並べ替え"
+          title="並べ替え"
+          onDragStart={(event) => {
+            event.dataTransfer.effectAllowed = "move";
+            onDragStart(card.id);
+          }}
+        >
           <GripVertical size={17} />
         </button>
         <div className="symbol-block">
@@ -489,14 +725,20 @@ function MarketCard({
       {card.quote && card.series.length ? (
         <>
           <div className="price-row">
-            <div>
-              <span className="price">{formatPrice(card.quote.price, card.currency)}</span>
-              <span className="currency">{card.currency === "PAIR" ? "" : card.currency}</span>
+            <div className="price-metric">
+              <span className="metric-label">Last / {card.currency === "PAIR" ? "Index" : card.currency}</span>
+              <div>
+                <span className="price">{formatPrice(card.quote.price, card.currency)}</span>
+                <span className="currency">{card.currency === "PAIR" ? "" : card.currency}</span>
+              </div>
             </div>
-            <span className={`change ${changeClass}`}>{formatChange(card.quote)}</span>
+            <div className="change-metric">
+              <span className="metric-label">Δ / day</span>
+              <span className={`change ${changeClass}`}>{formatChange(card.quote)}</span>
+            </div>
           </div>
 
-          <Sparkline series={card.series} tone={changeClass} />
+          <Sparkline series={card.series} tone={changeClass} currency={card.currency} />
         </>
       ) : (
         <div className="no-data-panel">
@@ -507,12 +749,12 @@ function MarketCard({
 
       <footer className="card-meta">
         <span>
-          {assetLabels[card.assetClass]} · {card.quote ? sourceLabels[card.quote.source] : "No data"}
+          Type / {assetLabels[card.assetClass]} · Src / {card.quote ? sourceLabels[card.quote.source] : "No data"}
         </span>
         {card.quote ? (
           <>
-            <span>H {formatPrice(card.quote.dayHigh, card.currency)}</span>
-            <span>L {formatPrice(card.quote.dayLow, card.currency)}</span>
+            <span>Hi / {formatPrice(card.quote.dayHigh, card.currency)}</span>
+            <span>Lo / {formatPrice(card.quote.dayLow, card.currency)}</span>
           </>
         ) : null}
       </footer>
@@ -696,6 +938,7 @@ export function WatchlistApp() {
   const [addOpen, setAddOpen] = useState(false);
   const [indexOpen, setIndexOpen] = useState(false);
   const [compactView, setCompactView] = useState(false);
+  const [theme, setTheme] = useState<Theme>("dark");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [quoteOverrides, setQuoteOverrides] = useState<Record<string, Quote>>({});
   const [historyErrors, setHistoryErrors] = useState<Record<string, string>>({});
@@ -732,6 +975,12 @@ export function WatchlistApp() {
       setToast(message);
     }
   }
+
+  useEffect(() => {
+    const initialTheme = document.documentElement.dataset.theme === "light" ? "light" : "dark";
+    setTheme(initialTheme);
+    applyDocumentTheme(initialTheme);
+  }, []);
 
   useEffect(() => {
     const savedLayout = readSavedLayout(window.localStorage);
@@ -1029,7 +1278,7 @@ export function WatchlistApp() {
     return () => {
       cancelled = true;
     };
-  }, [availableInstruments, cards]);
+  }, [availableInstruments, cards, marketRefreshNonce]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1038,7 +1287,10 @@ export function WatchlistApp() {
       const subscribedInstruments = cards
         .filter((card) => card.type === "instrument")
         .map((card) => availableInstruments.find((instrument) => instrument.id === card.refId))
-        .filter((instrument): instrument is Instrument => Boolean(instrument));
+        .filter(
+          (instrument): instrument is Instrument =>
+            Boolean(instrument) && instrument?.assetClass === "us_equity"
+        );
 
       if (!subscribedInstruments.length) {
         return;
@@ -1121,13 +1373,19 @@ export function WatchlistApp() {
       });
     }
 
-    void loadSnapshots().catch(() => {
-      if (!cancelled) {
-        setSnapshotError(true);
-      }
-    });
+    if (isUsRegularSession()) {
+      void loadSnapshots().catch(() => {
+        if (!cancelled) {
+          setSnapshotError(true);
+        }
+      });
+    }
 
     const interval = window.setInterval(() => {
+      if (!isUsRegularSession()) {
+        return;
+      }
+
       void loadSnapshots().catch(() => {
         if (!cancelled) {
           setSnapshotError(true);
@@ -1286,6 +1544,18 @@ export function WatchlistApp() {
     await document.documentElement.requestFullscreen();
   }
 
+  function toggleTheme() {
+    const nextTheme: Theme = theme === "dark" ? "light" : "dark";
+    setTheme(nextTheme);
+    applyDocumentTheme(nextTheme);
+
+    try {
+      window.localStorage.setItem(themeStorageKey, nextTheme);
+    } catch {
+      // The visual switch should still work when storage is unavailable.
+    }
+  }
+
   async function saveLayoutNow() {
     const layout = createSavedLayout({
       instruments: availableInstruments,
@@ -1330,68 +1600,92 @@ export function WatchlistApp() {
 
   return (
     <main className={`app-shell ${compactView ? "compact" : ""}`}>
-      <section className="workspace-bar">
+      <header className="workspace-bar">
         <div className="brand-block">
-          <div className="brand-mark">
-            <BarChart3 size={23} />
+          <div className="brand-mark" aria-hidden="true">
+            <span>W/L</span>
+            <small>01</small>
           </div>
-          <div>
-            <h1>WatchList</h1>
-            <p>US / Japan / FX market board</p>
+          <div className="brand-copy">
+            <span className="eyebrow">Market intelligence / Tokyo</span>
+            <h1>Watch<span>List</span></h1>
+            <p>US / Japan / FX — shared market board</p>
           </div>
         </div>
 
-        <div className="toolbar">
-          <div className="workspace-chip">
-            <span>Shared Market Desk</span>
-            <div className="avatar-stack" aria-label="team members">
-              <span title="K">K</span>
-              <span title="M">M</span>
-              <span title="R">R</span>
+        <div className="workspace-panel">
+          <div className="workspace-overview">
+            <div className="workspace-chip">
+              <span className="section-index">01</span>
+              <span>Shared Market Desk</span>
+              <div className="avatar-stack" aria-label="team members">
+                <span title="K">K</span>
+                <span title="M">M</span>
+                <span title="R">R</span>
+              </div>
+            </div>
+            <div className="status-group">
+              <div className={`status-pill ${workspaceConnected ? "ready" : ""}`}>
+                {workspaceConnected ? <Wifi size={14} /> : <WifiOff size={14} />}
+                {workspaceStatusLabel}
+              </div>
+              <div className={`status-pill ${marketDataReady ? "ready" : ""}`}>
+                {marketDataReady ? <Wifi size={14} /> : <WifiOff size={14} />}
+                {marketDataLabel}
+              </div>
             </div>
           </div>
-          <div className={`status-pill ${workspaceConnected ? "ready" : ""}`}>
-            {workspaceConnected ? <Wifi size={15} /> : <WifiOff size={15} />}
-            {workspaceStatusLabel}
+          <div className="toolbar">
+            <button className="ghost-button" onClick={() => void (sessionUser ? logout() : loginWithDiscord())}>
+              <LogIn size={16} />
+              {sessionUser ? "Logout" : "Discord"}
+            </button>
+            <button className="ghost-button" onClick={() => void saveLayoutNow()}>
+              <Save size={16} />
+              Save
+            </button>
+            <button className="ghost-button" onClick={() => setIndexOpen(true)}>
+              <BarChart3 size={16} />
+              指数
+            </button>
+            <button className="primary-button" onClick={() => setAddOpen(true)}>
+              <Plus size={16} />
+              追加
+            </button>
           </div>
-          <div className={`status-pill ${marketDataReady ? "ready" : ""}`}>
-            {marketDataReady ? <Wifi size={15} /> : <WifiOff size={15} />}
-            {marketDataLabel}
-          </div>
-          <button className="ghost-button" onClick={() => void (sessionUser ? logout() : loginWithDiscord())}>
-            <LogIn size={17} />
-            {sessionUser ? "Logout" : "Discord"}
-          </button>
-          <button className="ghost-button" onClick={() => void saveLayoutNow()}>
-            <Save size={17} />
-            Save
-          </button>
-          <button className="ghost-button" onClick={() => setIndexOpen(true)}>
-            <BarChart3 size={17} />
-            指数
-          </button>
-          <button className="primary-button" onClick={() => setAddOpen(true)}>
-            <Plus size={17} />
-            追加
-          </button>
         </div>
-      </section>
+      </header>
 
       <section className="control-strip">
-        <nav className="tabs" aria-label="watchlist filters">
-          {tabs.map((tab) => (
-            <button
-              key={tab.key}
-              className={activeTab === tab.key ? "active" : ""}
-              onClick={() => setActiveTab(tab.key)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </nav>
+        <div className="filter-group">
+          <span className="section-index">02</span>
+          <nav className="tabs" aria-label="watchlist filters">
+            {tabs.map((tab) => (
+              <button
+                key={tab.key}
+                className={activeTab === tab.key ? "active" : ""}
+                onClick={() => setActiveTab(tab.key)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+        </div>
         <div className="view-actions">
           <button
+            className="theme-toggle"
+            type="button"
+            aria-label="ライトモード"
+            aria-pressed={theme === "light"}
+            title={theme === "dark" ? "ライトモード" : "ダークモード"}
+            onClick={toggleTheme}
+          >
+            {theme === "dark" ? <Moon size={15} /> : <Sun size={15} />}
+            <span>{theme === "dark" ? "Dark" : "Light"}</span>
+          </button>
+          <button
             className="icon-button muted"
+            aria-label={isFullscreen ? "全画面を終了" : "全画面表示"}
             title={isFullscreen ? "全画面を終了" : "全画面表示"}
             onClick={() => void toggleFullscreen()}
           >
@@ -1399,6 +1693,7 @@ export function WatchlistApp() {
           </button>
           <button
             className={`icon-button muted ${compactView ? "active" : ""}`}
+            aria-label={compactView ? "標準表示" : "縮小表示"}
             title={compactView ? "標準表示" : "縮小表示"}
             onClick={() => setCompactView((current) => !current)}
           >
@@ -1406,6 +1701,7 @@ export function WatchlistApp() {
           </button>
           <button
             className="icon-button muted"
+            aria-label="更新"
             title="更新"
             onClick={() => {
               setMarketRefreshNonce((current) => current + 1);
@@ -1480,7 +1776,7 @@ export function WatchlistApp() {
         />
       ) : null}
 
-      {toast ? <div className="toast">{toast}</div> : null}
+      {toast ? <div className="toast" role="status" aria-live="polite">{toast}</div> : null}
     </main>
   );
 }

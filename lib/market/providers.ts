@@ -23,14 +23,24 @@ interface FinnhubQuoteResponse {
   t?: number;
 }
 
-interface FinnhubCandleResponse {
-  c?: number[];
-  h?: number[];
-  l?: number[];
-  o?: number[];
-  s?: string;
-  t?: number[];
-  v?: number[];
+interface YahooChartResponse {
+  chart?: {
+    result?: Array<{
+      meta?: {
+        chartPreviousClose?: number;
+        previousClose?: number;
+      };
+      timestamp?: number[];
+      indicators?: {
+        quote?: Array<{
+          close?: Array<number | null>;
+          high?: Array<number | null>;
+          low?: Array<number | null>;
+        }>;
+      };
+    }>;
+    error?: unknown;
+  };
 }
 
 export interface MarketHistory {
@@ -61,9 +71,10 @@ function getFinnhubToken() {
 
 async function getFinnhubSnapshots(providerSymbols: string[]): Promise<Quote[]> {
   const token = getFinnhubToken()!;
+  const usSymbols = providerSymbols.filter((providerSymbol) => providerSymbol.endsWith(".US"));
 
   const quotes = await Promise.all(
-    providerSymbols.map(async (providerSymbol): Promise<Quote | null> => {
+    usSymbols.map(async (providerSymbol): Promise<Quote | null> => {
       try {
         const symbol = toFinnhubSymbol(providerSymbol);
         const url = new URL("https://finnhub.io/api/v1/quote");
@@ -113,7 +124,7 @@ export async function getMarketHistory(providerSymbols: string[]): Promise<Marke
   const provider = process.env.MARKET_DATA_PROVIDER ?? "mock";
 
   if (provider === "finnhub" && getFinnhubToken()) {
-    return getFinnhubHistory(providerSymbols);
+    return getYahooHistory(providerSymbols);
   }
 
   return providerSymbols.map((providerSymbol) => ({
@@ -125,62 +136,70 @@ export async function getMarketHistory(providerSymbols: string[]): Promise<Marke
   }));
 }
 
-async function getFinnhubHistory(providerSymbols: string[]): Promise<MarketHistory[]> {
-  const token = getFinnhubToken()!;
-  const fifteenMinutes = 15 * 60;
-  const now = Math.floor(Date.now() / 1000 / fifteenMinutes) * fifteenMinutes;
-  const from = now - 60 * 60 * 24 * 5;
-
+async function getYahooHistory(providerSymbols: string[]): Promise<MarketHistory[]> {
   return Promise.all(
     providerSymbols.map(async (providerSymbol) => {
-      const symbol = toFinnhubSymbol(providerSymbol);
-      const url = new URL(getFinnhubCandleEndpoint(providerSymbol));
-      url.searchParams.set("symbol", symbol);
-      url.searchParams.set("resolution", "15");
-      url.searchParams.set("from", String(from));
-      url.searchParams.set("to", String(now));
-      url.searchParams.set("token", token);
+      const symbol = toYahooSymbol(providerSymbol);
+      const url = new URL(
+        `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`
+      );
+      url.searchParams.set("range", "1d");
+      url.searchParams.set("interval", "5m");
+      url.searchParams.set("includePrePost", "false");
 
       try {
         const response = await fetch(url, {
-          next: { revalidate: fifteenMinutes }
+          headers: { "User-Agent": "Mozilla/5.0 WatchList/1.0" },
+          next: { revalidate: 300 }
         });
 
         if (!response.ok) {
-          throw new Error(`Finnhub candle failed for ${symbol}: ${response.status}`);
+          throw new Error(`Chart history failed for ${symbol}: ${response.status}`);
         }
 
-        const row = (await response.json()) as FinnhubCandleResponse;
+        const payload = (await response.json()) as YahooChartResponse;
+        const result = payload.chart?.result?.[0];
+        const timestamps = result?.timestamp ?? [];
+        const quoteRow = result?.indicators?.quote?.[0];
+        const closes = quoteRow?.close ?? [];
 
-        if (row.s !== "ok" || !row.c?.length || !row.t?.length) {
-          throw new Error(`Finnhub candle returned no data for ${symbol}`);
+        if (!timestamps.length || !closes.length) {
+          throw new Error(`Chart history returned no data for ${symbol}`);
         }
 
-        const series = row.c
+        const series = timestamps
           .map((close, index) => ({
-            time: Number(row.t?.[index] ?? 0) * 1000,
-            value: Number(close)
+            time: Number(close) * 1000,
+            value: Number(closes[index])
           }))
           .filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value) && point.value > 0);
 
         if (!series.length) {
-          throw new Error(`Finnhub candle returned invalid data for ${symbol}`);
+          throw new Error(`Chart history returned invalid data for ${symbol}`);
         }
 
         const latest = series.at(-1)!;
-        const previous = series.at(-2)?.value ?? latest.value;
+        const previousClose = Number(
+          result?.meta?.chartPreviousClose ?? result?.meta?.previousClose ?? series.at(-2)?.value ?? latest.value
+        );
+        const highValues = (quoteRow?.high ?? []).filter(
+          (value): value is number => typeof value === "number" && Number.isFinite(value)
+        );
+        const lowValues = (quoteRow?.low ?? []).filter(
+          (value): value is number => typeof value === "number" && Number.isFinite(value)
+        );
         const values = series.map((point) => point.value);
-        const change = latest.value - previous;
+        const change = latest.value - previousClose;
         const quote: Quote = {
           instrumentId: providerSymbol,
           price: latest.value,
-          previousClose: previous,
+          previousClose,
           change,
-          changePercent: previous ? (change / previous) * 100 : 0,
-          dayHigh: Math.max(...values),
-          dayLow: Math.min(...values),
+          changePercent: previousClose ? (change / previousClose) * 100 : 0,
+          dayHigh: Math.max(...(highValues.length ? highValues : values)),
+          dayLow: Math.min(...(lowValues.length ? lowValues : values)),
           timestamp: new Date(latest.time).toISOString(),
-          source: "finnhub",
+          source: "yahoo",
           realtime: false
         };
 
@@ -188,7 +207,7 @@ async function getFinnhubHistory(providerSymbols: string[]): Promise<MarketHisto
           instrumentId: providerSymbol,
           quote,
           series,
-          source: "finnhub" as const
+          source: "yahoo" as const
         };
       } catch (error) {
         return {
@@ -196,19 +215,27 @@ async function getFinnhubHistory(providerSymbols: string[]): Promise<MarketHisto
           quote: null,
           series: [],
           source: null,
-          error: error instanceof Error ? error.message : "Failed to load market history."
+          error: error instanceof Error ? error.message : "Failed to load chart history."
         };
       }
     })
   );
 }
 
-function getFinnhubCandleEndpoint(providerSymbol: string) {
-  if (providerSymbol.endsWith(".FOREX")) {
-    return "https://finnhub.io/api/v1/forex/candle";
+function toYahooSymbol(providerSymbol: string) {
+  if (providerSymbol.endsWith(".US")) {
+    return providerSymbol.slice(0, -3);
   }
 
-  return "https://finnhub.io/api/v1/stock/candle";
+  if (providerSymbol.endsWith(".TSE")) {
+    return `${providerSymbol.slice(0, -4)}.T`;
+  }
+
+  if (providerSymbol.endsWith(".FOREX")) {
+    return `${providerSymbol.slice(0, -6)}=X`;
+  }
+
+  return providerSymbol;
 }
 
 async function getEodhdSnapshots(providerSymbols: string[]): Promise<Quote[]> {
@@ -265,7 +292,7 @@ export const providerRouting = {
     fallback: "EODHD global delayed snapshot"
   },
   fx: {
-    realtime: "Finnhub WebSocket using OANDA symbols",
-    fallback: "Finnhub quote REST, then EODHD REST snapshot"
+    realtime: "Cached 5-minute chart history",
+    fallback: "Yahoo chart history with no Finnhub quote polling"
   }
 } as const;

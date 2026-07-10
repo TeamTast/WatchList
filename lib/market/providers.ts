@@ -165,6 +165,32 @@ function instrumentFromYahooSearchResult(
     };
   }
 
+  if (quote.quoteType === "INDEX") {
+    const isNikkei = symbol === "^N225";
+    const isKospi = symbol === "^KS11";
+    return {
+      id: `index-${symbol.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      symbol,
+      providerSymbol: symbol,
+      name,
+      assetClass: "market_index",
+      market: isNikkei || isKospi ? "INDEX" : "US",
+      currency: isNikkei ? "JPY" : isKospi ? "KRW" : "USD"
+    };
+  }
+
+  if (quote.quoteType === "FUTURE") {
+    return {
+      id: `commodity-${symbol.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      symbol,
+      providerSymbol: symbol,
+      name,
+      assetClass: "commodity",
+      market: "COMMODITY",
+      currency: "USD"
+    };
+  }
+
   if (quote.quoteType === "EQUITY" && /^[A-Z.]{1,12}$/.test(symbol)) {
     return {
       id: `us-${symbol.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
@@ -236,19 +262,7 @@ async function getFinnhubSnapshots(providerSymbols: string[]): Promise<Quote[]> 
 }
 
 export async function getMarketHistory(providerSymbols: string[]): Promise<MarketHistory[]> {
-  const provider = process.env.MARKET_DATA_PROVIDER ?? "mock";
-
-  if (provider === "finnhub" && getFinnhubToken()) {
-    return getYahooHistory(providerSymbols);
-  }
-
-  return providerSymbols.map((providerSymbol) => ({
-    instrumentId: providerSymbol,
-    quote: null,
-    series: [],
-    source: null,
-    error: "Market data provider is not configured."
-  }));
+  return getYahooHistory(providerSymbols);
 }
 
 async function getYahooHistory(providerSymbols: string[]): Promise<MarketHistory[]> {
@@ -409,5 +423,13 @@ export const providerRouting = {
   fx: {
     realtime: "Cached 5-minute chart history",
     fallback: "Yahoo chart history with no Finnhub quote polling"
+  },
+  market_index: {
+    realtime: "Cached 5-minute chart history",
+    fallback: "Yahoo chart history"
+  },
+  commodity: {
+    realtime: "Cached 5-minute futures chart history",
+    fallback: "Yahoo chart history"
   }
 } as const;

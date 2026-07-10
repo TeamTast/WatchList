@@ -1,6 +1,6 @@
-export type AssetClass = "us_equity" | "jp_equity" | "fx" | "custom_index";
+export type AssetClass = "us_equity" | "jp_equity" | "fx" | "market_index" | "commodity" | "custom_index";
 
-export type MarketRegion = "US" | "JP" | "FX" | "CUSTOM";
+export type MarketRegion = "US" | "JP" | "KR" | "FX" | "INDEX" | "COMMODITY" | "CUSTOM";
 
 export type WeightingMode = "equal" | "custom";
 
@@ -11,7 +11,7 @@ export interface Instrument {
   name: string;
   assetClass: Exclude<AssetClass, "custom_index">;
   market: MarketRegion;
-  currency: "USD" | "JPY" | "PAIR";
+  currency: "USD" | "JPY" | "KRW" | "PAIR";
 }
 
 export interface Quote {
@@ -58,7 +58,7 @@ export interface MarketCardView {
   name: string;
   market: MarketRegion;
   assetClass: AssetClass;
-  currency: "USD" | "JPY" | "PAIR";
+  currency: "USD" | "JPY" | "KRW" | "PAIR";
   quote: Quote | null;
   series: SeriesPoint[];
   providerSymbol?: string;

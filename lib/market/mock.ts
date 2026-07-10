@@ -43,7 +43,7 @@ export const instruments: Instrument[] = [
     providerSymbol: "7203.TSE",
     name: "Toyota",
     assetClass: "jp_equity",
-    market: "JP",
+    market: "INDEX",
     currency: "JPY"
   },
   {
@@ -108,6 +108,42 @@ export const instruments: Instrument[] = [
     assetClass: "fx",
     market: "FX",
     currency: "PAIR"
+  },
+  {
+    id: "nikkei-225",
+    symbol: "N225",
+    providerSymbol: "^N225",
+    name: "日経225",
+    assetClass: "market_index",
+    market: "JP",
+    currency: "JPY"
+  },
+  {
+    id: "kospi",
+    symbol: "KOSPI",
+    providerSymbol: "^KS11",
+    name: "KOSPI",
+    assetClass: "market_index",
+    market: "INDEX",
+    currency: "KRW"
+  },
+  {
+    id: "gold",
+    symbol: "GC=F",
+    providerSymbol: "GC=F",
+    name: "ゴールド",
+    assetClass: "commodity",
+    market: "COMMODITY",
+    currency: "USD"
+  },
+  {
+    id: "wti",
+    symbol: "CL=F",
+    providerSymbol: "CL=F",
+    name: "WTI原油",
+    assetClass: "commodity",
+    market: "COMMODITY",
+    currency: "USD"
   }
 ];
 

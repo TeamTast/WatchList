@@ -45,14 +45,20 @@ const tabs: Array<{ key: "ALL" | MarketRegion; label: string }> = [
   { key: "ALL", label: "All" },
   { key: "US", label: "米国株" },
   { key: "JP", label: "日本株" },
+  { key: "KR", label: "韓国" },
   { key: "FX", label: "FX" },
-  { key: "CUSTOM", label: "指数" }
+  { key: "INDEX", label: "指数" },
+  { key: "COMMODITY", label: "商品" },
+  { key: "CUSTOM", label: "自作指数" }
 ];
 
 const marketLabels: Record<MarketRegion, string> = {
   US: "US",
   JP: "JP",
+  KR: "KR",
   FX: "FX",
+  INDEX: "INDEX",
+  COMMODITY: "CMDTY",
   CUSTOM: "IDX"
 };
 
@@ -60,6 +66,8 @@ const assetLabels: Record<AssetClass, string> = {
   us_equity: "Stock",
   jp_equity: "Stock",
   fx: "FX",
+  market_index: "Index",
+  commodity: "Commodity",
   custom_index: "Index"
 };
 
@@ -121,6 +129,10 @@ type SavedLayout = {
   activeTab: "ALL" | MarketRegion;
 };
 
+// View preferences stay in local storage and are never included in the shared
+// workspace state.
+type SharedLayout = Omit<SavedLayout, "activeTab" | "compactView">;
+
 interface SnapshotResponse {
   quotes: Quote[];
 }
@@ -144,7 +156,7 @@ interface InstrumentSearchResponse {
 }
 
 function formatPrice(value: number, currency: MarketCardView["currency"]) {
-  if (currency === "JPY") {
+  if (currency === "JPY" || currency === "KRW") {
     return new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 0 }).format(value);
   }
 
@@ -166,7 +178,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isMarketRegion(value: unknown): value is MarketRegion {
-  return value === "US" || value === "JP" || value === "FX" || value === "CUSTOM";
+  return value === "US" || value === "JP" || value === "KR" || value === "FX" || value === "INDEX" || value === "COMMODITY" || value === "CUSTOM";
 }
 
 function isInstrument(value: unknown): value is Instrument {
@@ -179,9 +191,13 @@ function isInstrument(value: unknown): value is Instrument {
     typeof value.symbol === "string" &&
     typeof value.providerSymbol === "string" &&
     typeof value.name === "string" &&
-    (value.assetClass === "us_equity" || value.assetClass === "jp_equity" || value.assetClass === "fx") &&
+    (value.assetClass === "us_equity" ||
+      value.assetClass === "jp_equity" ||
+      value.assetClass === "fx" ||
+      value.assetClass === "market_index" ||
+      value.assetClass === "commodity") &&
     isMarketRegion(value.market) &&
-    (value.currency === "USD" || value.currency === "JPY" || value.currency === "PAIR")
+    (value.currency === "USD" || value.currency === "JPY" || value.currency === "KRW" || value.currency === "PAIR")
   );
 }
 
@@ -277,13 +293,16 @@ function createSavedLayout(layout: Omit<SavedLayout, "version" | "savedAt">): Sa
   };
 }
 
-function layoutFingerprint(layout: SavedLayout) {
+function createSharedLayout(layout: SavedLayout): SharedLayout {
+  const { activeTab: _activeTab, compactView: _compactView, ...sharedLayout } = layout;
+  return sharedLayout;
+}
+
+function layoutFingerprint(layout: SharedLayout) {
   return JSON.stringify({
     instruments: layout.instruments,
     cards: layout.cards,
-    customIndexes: layout.customIndexes,
-    compactView: layout.compactView,
-    activeTab: layout.activeTab
+    customIndexes: layout.customIndexes
   });
 }
 
@@ -916,10 +935,10 @@ function MarketCard({
           {card.assetClass === "custom_index" ? (
             <>
               <div className="symbol-row">
-                <strong>{card.symbol}</strong>
+                <EditableCardName name={card.symbol} onRename={(name) => onRename(card.id, name)} />
                 <span className={`market-pill ${card.market.toLowerCase()}`}>{marketLabels[card.market]}</span>
               </div>
-              <EditableCardName name={card.name} onRename={(name) => onRename(card.id, name)} />
+              <span className="ticker-code">{card.name}</span>
             </>
           ) : (
             <>
@@ -1381,9 +1400,7 @@ export function WatchlistApp() {
     setAvailableInstruments(mergeInstruments(layout.instruments));
     setCards(layout.cards);
     setCustomIndexes(layout.customIndexes);
-    setCompactView(layout.compactView);
-    setActiveTab(layout.activeTab);
-    lastSyncedLayoutFingerprint.current = layoutFingerprint(layout);
+    lastSyncedLayoutFingerprint.current = layoutFingerprint(createSharedLayout(layout));
 
     if (message) {
       setToast(message);
@@ -1564,7 +1581,7 @@ export function WatchlistApp() {
         (payload) => {
           const remoteLayout = parseSavedLayout((payload.new as { layout?: unknown }).layout);
 
-          if (!remoteLayout || layoutFingerprint(remoteLayout) === lastSyncedLayoutFingerprint.current) {
+          if (!remoteLayout || layoutFingerprint(createSharedLayout(remoteLayout)) === lastSyncedLayoutFingerprint.current) {
             return;
           }
 
@@ -1598,7 +1615,7 @@ export function WatchlistApp() {
         const { error: updateError } = await client
           .from("space_state")
           .update({
-            layout: initialLayout,
+            layout: createSharedLayout(initialLayout),
             revision: Date.now(),
             updated_by: userId,
             updated_at: new Date().toISOString()
@@ -1609,7 +1626,7 @@ export function WatchlistApp() {
           throw updateError;
         }
 
-        lastSyncedLayoutFingerprint.current = layoutFingerprint(initialLayout);
+        lastSyncedLayoutFingerprint.current = layoutFingerprint(createSharedLayout(initialLayout));
       }
 
       if (!cancelled) {
@@ -1657,7 +1674,8 @@ export function WatchlistApp() {
       return;
     }
 
-    const fingerprint = layoutFingerprint(layout);
+    const sharedLayout = createSharedLayout(layout);
+    const fingerprint = layoutFingerprint(sharedLayout);
 
     if (fingerprint === lastSyncedLayoutFingerprint.current) {
       return;
@@ -1667,7 +1685,7 @@ export function WatchlistApp() {
       void supabase
         .from("space_state")
         .update({
-          layout,
+          layout: sharedLayout,
           revision: Date.now(),
           updated_by: sessionUser.id,
           updated_at: new Date().toISOString()
@@ -2142,7 +2160,7 @@ export function WatchlistApp() {
     const { error } = await supabase
       .from("space_state")
       .update({
-        layout,
+        layout: createSharedLayout(layout),
         revision: Date.now(),
         updated_by: sessionUser.id,
         updated_at: new Date().toISOString()
@@ -2155,7 +2173,7 @@ export function WatchlistApp() {
       return;
     }
 
-    lastSyncedLayoutFingerprint.current = layoutFingerprint(layout);
+    lastSyncedLayoutFingerprint.current = layoutFingerprint(createSharedLayout(layout));
     setWorkspaceStatus("synced");
     setToast(`${activeSpace?.name ?? "選択中のスペース"}に保存しました`);
   }

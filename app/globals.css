@@ -583,7 +583,6 @@ h1 span {
 .market-card:focus-within {
   z-index: 1;
   background: var(--surface-raised);
-  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 .market-card:has(.chart-callout) {
@@ -1375,14 +1374,23 @@ h1 span {
   padding-right: 3px;
 }
 
+.space-list.has-settings {
+  max-height: min(520px, 58dvh);
+}
+
+.space-list-entry {
+  display: grid;
+  gap: 7px;
+}
+
 .space-list-item {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
   align-items: center;
   width: 100%;
   border: 1px solid var(--line);
-  padding: 12px;
+  padding: 5px;
   color: var(--text);
   background: var(--surface);
   text-align: left;
@@ -1394,7 +1402,20 @@ h1 span {
   background: color-mix(in srgb, var(--accent) 7%, var(--surface));
 }
 
-.space-list-item > span {
+.space-list-select {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  border: 0;
+  padding: 7px;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+}
+
+.space-list-select > span {
   display: grid;
   min-width: 0;
   gap: 3px;
@@ -1412,6 +1433,153 @@ h1 span {
 .form-error {
   color: var(--muted);
   font-size: 10px;
+}
+
+.space-settings-button,
+.danger-outline-button {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  padding: 0 10px;
+  color: var(--muted);
+  background: var(--surface-raised);
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.space-settings-button:hover,
+.space-settings-button.active {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.space-role-label {
+  padding: 0 8px;
+  text-transform: uppercase;
+}
+
+.space-settings-panel {
+  border: 1px solid var(--line-strong);
+  border-top: 3px solid var(--accent);
+  padding: 15px;
+  background: var(--surface);
+}
+
+.space-settings-panel > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.space-settings-panel h3 {
+  margin-top: 4px;
+  font-size: 17px;
+}
+
+.owner-only-badge {
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line));
+  padding: 5px 7px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.space-rename-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.space-rename-row label,
+.space-delete-confirmation label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.space-rename-row input,
+.space-delete-confirmation input {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  padding: 0 11px;
+  outline: 0;
+  color: var(--text);
+  background: var(--surface-raised);
+}
+
+.space-rename-row input:focus,
+.space-delete-confirmation input:focus {
+  border-color: var(--focus);
+}
+
+.space-rename-row .primary-button {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+}
+
+.space-danger-zone {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  border: 1px solid color-mix(in srgb, var(--negative) 38%, var(--line));
+  border-left: 5px solid var(--negative);
+  padding: 13px;
+  background: var(--negative-bg);
+}
+
+.space-danger-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.danger-outline-button {
+  justify-self: start;
+  border-color: var(--negative);
+  color: var(--negative);
+  background: transparent;
+}
+
+.danger-outline-button:hover {
+  color: white;
+  background: var(--negative);
+}
+
+.space-delete-confirmation {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--negative) 30%, var(--line));
+  padding-top: 12px;
+}
+
+.space-delete-confirmation label span strong {
+  color: var(--text);
+}
+
+.space-delete-confirmation > div {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.space-settings-panel > .form-error {
+  margin-top: 10px;
 }
 
 .empty-space-message {
@@ -1769,6 +1937,20 @@ h1 span {
   }
 
   .space-create-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .space-rename-row {
+    grid-template-columns: 1fr;
+  }
+
+  .space-rename-row .primary-button,
+  .space-delete-confirmation > div > button {
+    width: 100%;
+  }
+
+  .space-delete-confirmation > div {
+    display: grid;
     grid-template-columns: 1fr;
   }
 

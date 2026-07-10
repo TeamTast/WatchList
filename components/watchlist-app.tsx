@@ -1512,6 +1512,8 @@ function SpaceDialog({
   loading,
   onSelect,
   onCreate,
+  onRename,
+  onDelete,
   onClose
 }: {
   spaces: SpaceSummary[];
@@ -1520,6 +1522,8 @@ function SpaceDialog({
   loading: boolean;
   onSelect: (spaceId: string) => void;
   onCreate: (input: { name: string; kind: SpaceKind; guildId: string | null }) => Promise<void>;
+  onRename: (spaceId: string, name: string) => Promise<void>;
+  onDelete: (space: SpaceSummary, confirmationName: string) => Promise<void>;
   onClose: () => void;
 }) {
   const [name, setName] = useState("");
@@ -1527,6 +1531,14 @@ function SpaceDialog({
   const [guildId, setGuildId] = useState(guilds[0]?.id ?? "");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
+  const [managedSpaceId, setManagedSpaceId] = useState<string | null>(null);
+  const [editedName, setEditedName] = useState("");
+  const [savingName, setSavingName] = useState(false);
+  const [dangerOpen, setDangerOpen] = useState(false);
+  const [confirmationName, setConfirmationName] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [settingsError, setSettingsError] = useState("");
+  const managedSpace = spaces.find((space) => space.id === managedSpaceId && space.role === "owner") ?? null;
 
   async function createSpace() {
     if (!name.trim()) {
@@ -1550,6 +1562,59 @@ function SpaceDialog({
     }
   }
 
+  function openSettings(space: SpaceSummary) {
+    if (managedSpaceId === space.id) {
+      setManagedSpaceId(null);
+      setDangerOpen(false);
+      setConfirmationName("");
+      setSettingsError("");
+      return;
+    }
+
+    setManagedSpaceId(space.id);
+    setEditedName(space.name);
+    setDangerOpen(false);
+    setConfirmationName("");
+    setSettingsError("");
+  }
+
+  async function renameSpace() {
+    if (!managedSpace) return;
+    const nextName = editedName.trim();
+    if (!nextName) {
+      setSettingsError("スペース名を入力してください。");
+      return;
+    }
+
+    setSavingName(true);
+    setSettingsError("");
+    try {
+      await onRename(managedSpace.id, nextName);
+      setEditedName(nextName);
+    } catch (renameError) {
+      setSettingsError(renameError instanceof Error ? renameError.message : "スペース名を変更できませんでした。");
+    } finally {
+      setSavingName(false);
+    }
+  }
+
+  async function deleteSpace() {
+    if (!managedSpace || confirmationName !== managedSpace.name) return;
+
+    setDeleting(true);
+    setSettingsError("");
+    try {
+      await onDelete(managedSpace, confirmationName);
+      setManagedSpaceId(null);
+      setDangerOpen(false);
+      setConfirmationName("");
+    } catch (deleteError) {
+      setSettingsError(deleteError instanceof Error ? deleteError.message : "スペースを削除できませんでした。");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <div className="modal-backdrop" role="presentation">
       <section className="modal-panel space-modal" role="dialog" aria-modal="true" aria-label="スペース管理">
@@ -1562,23 +1627,120 @@ function SpaceDialog({
           <button className="icon-button" aria-label="閉じる" onClick={onClose}><X size={18} /></button>
         </header>
 
-        <div className="space-list" aria-label="利用可能なスペース">
+        <div className={`space-list ${managedSpace ? "has-settings" : ""}`} aria-label="利用可能なスペース">
           {spaces.map((space) => (
-            <button
-              key={space.id}
-              className={`space-list-item ${space.id === activeSpaceId ? "active" : ""}`}
-              onClick={() => {
-                onSelect(space.id);
-                onClose();
-              }}
-            >
-              {space.kind === "private" ? <LockKeyhole size={17} /> : <Server size={17} />}
-              <span>
-                <strong>{space.name}</strong>
-                <small>{space.kind === "private" ? "プライベート" : space.guildName}</small>
-              </span>
-              <small>{space.role === "owner" ? "Owner" : "Member"}</small>
-            </button>
+            <div className="space-list-entry" key={space.id}>
+              <div className={`space-list-item ${space.id === activeSpaceId ? "active" : ""}`}>
+                <button
+                  className="space-list-select"
+                  onClick={() => {
+                    onSelect(space.id);
+                    onClose();
+                  }}
+                >
+                  {space.kind === "private" ? <LockKeyhole size={17} /> : <Server size={17} />}
+                  <span>
+                    <strong>{space.name}</strong>
+                    <small>{space.kind === "private" ? "プライベート" : space.guildName}</small>
+                  </span>
+                </button>
+                {space.role === "owner" ? (
+                  <button
+                    className={`space-settings-button ${managedSpaceId === space.id ? "active" : ""}`}
+                    aria-label={`${space.name}の設定`}
+                    aria-expanded={managedSpaceId === space.id}
+                    aria-controls={`space-settings-${space.id}`}
+                    onClick={() => openSettings(space)}
+                  >
+                    <SlidersHorizontal size={14} />
+                    設定
+                  </button>
+                ) : (
+                  <small className="space-role-label">Member</small>
+                )}
+              </div>
+
+              {managedSpaceId === space.id && managedSpace ? (
+                <section
+                  id={`space-settings-${space.id}`}
+                  className="space-settings-panel"
+                  aria-labelledby={`space-settings-title-${space.id}`}
+                >
+                  <header>
+                    <div>
+                      <span className="eyebrow">Owner settings</span>
+                      <h3 id={`space-settings-title-${space.id}`}>{managedSpace.name} の設定</h3>
+                    </div>
+                    <span className="owner-only-badge">Owner only</span>
+                  </header>
+
+                  <div className="space-rename-row">
+                    <label>
+                      <span>スペース名</span>
+                      <input
+                        value={editedName}
+                        maxLength={60}
+                        onChange={(event) => setEditedName(event.target.value)}
+                      />
+                    </label>
+                    <button
+                      className="primary-button"
+                      disabled={savingName || !editedName.trim() || editedName.trim() === managedSpace.name}
+                      onClick={() => void renameSpace()}
+                    >
+                      <Save size={16} />
+                      {savingName ? "保存中" : "名前を保存"}
+                    </button>
+                  </div>
+
+                  <div className="space-danger-zone">
+                    <div className="space-danger-heading">
+                      <span className="delete-warning-label"><AlertTriangle size={15} /> Danger zone</span>
+                      <p>スペース内のレイアウトと共有データがすべて削除されます。この操作は元に戻せません。</p>
+                    </div>
+                    {!dangerOpen ? (
+                      <button className="danger-outline-button" onClick={() => setDangerOpen(true)}>
+                        <Trash2 size={16} />
+                        削除手続きを開く
+                      </button>
+                    ) : (
+                      <div className="space-delete-confirmation">
+                        <label>
+                          <span>確認のため「<strong>{managedSpace.name}</strong>」と入力してください</span>
+                          <input
+                            value={confirmationName}
+                            autoComplete="off"
+                            placeholder={managedSpace.name}
+                            onChange={(event) => setConfirmationName(event.target.value)}
+                          />
+                        </label>
+                        <div>
+                          <button
+                            className="ghost-button"
+                            disabled={deleting}
+                            onClick={() => {
+                              setDangerOpen(false);
+                              setConfirmationName("");
+                            }}
+                          >
+                            キャンセル
+                          </button>
+                          <button
+                            className="danger-button"
+                            disabled={deleting || confirmationName !== managedSpace.name}
+                            onClick={() => void deleteSpace()}
+                          >
+                            <Trash2 size={16} />
+                            {deleting ? "削除中" : "完全に削除"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {settingsError ? <p className="form-error" role="alert">{settingsError}</p> : null}
+                </section>
+              ) : null}
+            </div>
           ))}
           {!spaces.length && !loading ? <p className="empty-space-message">まだスペースがありません。</p> : null}
         </div>
@@ -1755,6 +1917,62 @@ export function WatchlistApp() {
 
     await loadSpaces(body.space.id);
     setToast(`${body.space.name}を作成しました`);
+  }
+
+  async function renameSpace(spaceId: string, name: string) {
+    const response = await fetch(`/api/spaces/${encodeURIComponent(spaceId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name })
+    });
+    const body = (await response.json()) as { space?: SpaceSummary; error?: string };
+    if (!response.ok || !body.space) {
+      throw new Error(body.error ?? "スペース名を変更できませんでした。");
+    }
+
+    setSpaces((current) => current.map((space) => space.id === spaceId ? body.space! : space));
+    setToast(`スペース名を「${body.space.name}」に変更しました`);
+  }
+
+  async function deleteSpace(space: SpaceSummary, confirmationName: string) {
+    const response = await fetch(`/api/spaces/${encodeURIComponent(space.id)}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmationName })
+    });
+    const body = (await response.json()) as { deletedSpaceId?: string; error?: string };
+    if (!response.ok || body.deletedSpaceId !== space.id) {
+      throw new Error(body.error ?? "スペースを削除できませんでした。");
+    }
+
+    const remainingSpaces = spaces.filter((item) => item.id !== space.id);
+    setSpaces(remainingSpaces);
+
+    try {
+      window.localStorage.removeItem(spaceLayoutStorageKey(space.id));
+    } catch {
+      // The server-side deletion succeeded even if local cleanup is unavailable.
+    }
+
+    if (activeSpaceId === space.id) {
+      const nextSpace = remainingSpaces[0];
+      if (nextSpace) {
+        switchSpace(nextSpace.id, false);
+      } else {
+        remoteSyncReady.current = false;
+        lastSyncedLayoutFingerprint.current = "";
+        setActiveSpaceId(null);
+        setWorkspaceStatus("local");
+        resetToDefaultLayout();
+        try {
+          window.localStorage.removeItem(activeSpaceStorageKey);
+        } catch {
+          // Keep the empty workspace usable when storage is blocked.
+        }
+      }
+    }
+
+    setToast(`「${space.name}」を削除しました`);
   }
 
   useEffect(() => {
@@ -2714,6 +2932,8 @@ export function WatchlistApp() {
           loading={spacesLoading}
           onSelect={switchSpace}
           onCreate={createSpace}
+          onRename={renameSpace}
+          onDelete={deleteSpace}
           onClose={() => setSpaceDialogOpen(false)}
         />
       ) : null}

@@ -56,51 +56,57 @@ export async function getMarketSnapshots(providerSymbols: string[]): Promise<Quo
 }
 
 function getFinnhubToken() {
-  return process.env.FINNHUB_API_KEY ?? process.env.NEXT_PUBLIC_FINNHUB_API_KEY;
+  return process.env.FINNHUB_API_KEY;
 }
 
 async function getFinnhubSnapshots(providerSymbols: string[]): Promise<Quote[]> {
   const token = getFinnhubToken()!;
 
-  return Promise.all(
-    providerSymbols.map(async (providerSymbol) => {
-      const symbol = toFinnhubSymbol(providerSymbol);
-      const url = new URL("https://finnhub.io/api/v1/quote");
-      url.searchParams.set("symbol", symbol);
-      url.searchParams.set("token", token);
+  const quotes = await Promise.all(
+    providerSymbols.map(async (providerSymbol): Promise<Quote | null> => {
+      try {
+        const symbol = toFinnhubSymbol(providerSymbol);
+        const url = new URL("https://finnhub.io/api/v1/quote");
+        url.searchParams.set("symbol", symbol);
+        url.searchParams.set("token", token);
 
-      const response = await fetch(url, {
-        next: { revalidate: 10 }
-      });
+        const response = await fetch(url, {
+          next: { revalidate: 60 }
+        });
 
-      if (!response.ok) {
-        throw new Error(`Finnhub quote failed for ${symbol}: ${response.status}`);
+        if (!response.ok) {
+          return null;
+        }
+
+        const row = (await response.json()) as FinnhubQuoteResponse;
+        const price = Number(row.c ?? 0);
+
+        if (!Number.isFinite(price) || price <= 0) {
+          return null;
+        }
+
+        const previousClose = Number(row.pc ?? price);
+        const change = Number(row.d ?? price - previousClose);
+
+        return {
+          instrumentId: providerSymbol,
+          price,
+          previousClose,
+          change,
+          changePercent: Number(row.dp ?? (previousClose ? (change / previousClose) * 100 : 0)),
+          dayHigh: Number(row.h ?? price),
+          dayLow: Number(row.l ?? price),
+          timestamp: row.t ? new Date(row.t * 1000).toISOString() : new Date().toISOString(),
+          source: "finnhub",
+          realtime: true
+        };
+      } catch {
+        return null;
       }
-
-      const row = (await response.json()) as FinnhubQuoteResponse;
-      const price = Number(row.c ?? 0);
-
-      if (!Number.isFinite(price) || price <= 0) {
-        throw new Error(`Finnhub quote returned no price for ${symbol}`);
-      }
-
-      const previousClose = Number(row.pc ?? price);
-      const change = Number(row.d ?? price - previousClose);
-
-      return {
-        instrumentId: providerSymbol,
-        price,
-        previousClose,
-        change,
-        changePercent: Number(row.dp ?? (previousClose ? (change / previousClose) * 100 : 0)),
-        dayHigh: Number(row.h ?? price),
-        dayLow: Number(row.l ?? price),
-        timestamp: row.t ? new Date(row.t * 1000).toISOString() : new Date().toISOString(),
-        source: "finnhub",
-        realtime: true
-      };
     })
   );
+
+  return quotes.filter((quote): quote is Quote => quote !== null);
 }
 
 export async function getMarketHistory(providerSymbols: string[]): Promise<MarketHistory[]> {
@@ -121,7 +127,8 @@ export async function getMarketHistory(providerSymbols: string[]): Promise<Marke
 
 async function getFinnhubHistory(providerSymbols: string[]): Promise<MarketHistory[]> {
   const token = getFinnhubToken()!;
-  const now = Math.floor(Date.now() / 1000);
+  const fifteenMinutes = 15 * 60;
+  const now = Math.floor(Date.now() / 1000 / fifteenMinutes) * fifteenMinutes;
   const from = now - 60 * 60 * 24 * 5;
 
   return Promise.all(
@@ -136,7 +143,7 @@ async function getFinnhubHistory(providerSymbols: string[]): Promise<MarketHisto
 
       try {
         const response = await fetch(url, {
-          cache: "no-store"
+          next: { revalidate: fifteenMinutes }
         });
 
         if (!response.ok) {
@@ -217,7 +224,7 @@ async function getEodhdSnapshots(providerSymbols: string[]): Promise<Quote[]> {
   url.searchParams.set("fmt", "json");
 
   const response = await fetch(url, {
-    next: { revalidate: 10 }
+    next: { revalidate: 60 }
   });
 
   if (!response.ok) {

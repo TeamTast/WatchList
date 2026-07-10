@@ -16,7 +16,7 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { connectFinnhubTradeStream, type FinnhubStatus } from "@/lib/market/finnhub";
+import type { User } from "@supabase/supabase-js";
 import { buildIndexQuote, buildIndexSeries } from "@/lib/market/index-builder";
 import {
   instruments as defaultInstruments,
@@ -64,15 +64,9 @@ const sourceLabels: Record<Quote["source"], string> = {
   massive: "Massive"
 };
 
-const finnhubStatusLabels: Record<FinnhubStatus, string> = {
-  disabled: "Market demo",
-  connecting: "Finnhub connecting",
-  live: "Finnhub live",
-  error: "Finnhub error",
-  closed: "Finnhub closed"
-};
-
 const layoutStorageKey = "watchlist.layout.v1";
+const sharedWorkspaceKey = "shared-market-desk";
+const snapshotPollIntervalMs = 60_000;
 
 const initialWatchCards: WatchCard[] = [
   ...defaultWatchCards,
@@ -186,6 +180,35 @@ function mergeInstruments(savedInstruments: Instrument[]) {
   return Array.from(instrumentsById.values());
 }
 
+function parseSavedLayout(layout: unknown): SavedLayout | null {
+  if (!isObject(layout)) {
+    return null;
+  }
+
+  const activeTab = layout.activeTab === "ALL" || isMarketRegion(layout.activeTab) ? layout.activeTab : "ALL";
+  const instruments = Array.isArray(layout.instruments)
+    ? layout.instruments.filter(isInstrument)
+    : defaultInstruments;
+  const cards = Array.isArray(layout.cards) ? layout.cards.filter(isWatchCard) : initialWatchCards;
+  const customIndexes = Array.isArray(layout.customIndexes)
+    ? layout.customIndexes.filter(isCustomIndex)
+    : defaultIndexes;
+
+  if (!cards.length) {
+    return null;
+  }
+
+  return {
+    version: 1,
+    savedAt: typeof layout.savedAt === "string" ? layout.savedAt : new Date().toISOString(),
+    instruments,
+    cards,
+    customIndexes,
+    compactView: Boolean(layout.compactView),
+    activeTab
+  };
+}
+
 function readSavedLayout(storage: Storage): SavedLayout | null {
   const rawLayout = storage.getItem(layoutStorageKey);
 
@@ -194,47 +217,28 @@ function readSavedLayout(storage: Storage): SavedLayout | null {
   }
 
   try {
-    const layout = JSON.parse(rawLayout) as unknown;
-
-    if (!isObject(layout)) {
-      return null;
-    }
-
-    const activeTab = layout.activeTab === "ALL" || isMarketRegion(layout.activeTab) ? layout.activeTab : "ALL";
-    const instruments = Array.isArray(layout.instruments)
-      ? layout.instruments.filter(isInstrument)
-      : defaultInstruments;
-    const cards = Array.isArray(layout.cards) ? layout.cards.filter(isWatchCard) : initialWatchCards;
-    const customIndexes = Array.isArray(layout.customIndexes)
-      ? layout.customIndexes.filter(isCustomIndex)
-      : defaultIndexes;
-
-    if (!cards.length) {
-      return null;
-    }
-
-    return {
-      version: 1,
-      savedAt: typeof layout.savedAt === "string" ? layout.savedAt : new Date().toISOString(),
-      instruments,
-      cards,
-      customIndexes,
-      compactView: Boolean(layout.compactView),
-      activeTab
-    };
+    return parseSavedLayout(JSON.parse(rawLayout) as unknown);
   } catch {
     return null;
   }
 }
 
-function writeSavedLayout(storage: Storage, layout: Omit<SavedLayout, "version" | "savedAt">) {
-  const payload: SavedLayout = {
+function createSavedLayout(layout: Omit<SavedLayout, "version" | "savedAt">): SavedLayout {
+  return {
     ...layout,
     version: 1,
     savedAt: new Date().toISOString()
   };
+}
 
-  storage.setItem(layoutStorageKey, JSON.stringify(payload));
+function layoutFingerprint(layout: SavedLayout) {
+  return JSON.stringify({
+    instruments: layout.instruments,
+    cards: layout.cards,
+    customIndexes: layout.customIndexes,
+    compactView: layout.compactView,
+    activeTab: layout.activeTab
+  });
 }
 
 function formatChange(quote: Quote) {
@@ -693,19 +697,41 @@ export function WatchlistApp() {
   const [indexOpen, setIndexOpen] = useState(false);
   const [compactView, setCompactView] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [finnhubStatus, setFinnhubStatus] = useState<FinnhubStatus>("disabled");
-  const [liveInstrumentIds, setLiveInstrumentIds] = useState<Record<string, true>>({});
   const [quoteOverrides, setQuoteOverrides] = useState<Record<string, Quote>>({});
   const [historyErrors, setHistoryErrors] = useState<Record<string, string>>({});
   const [serverQuoteSource, setServerQuoteSource] = useState<Quote["source"] | null>(null);
   const [snapshotError, setSnapshotError] = useState(false);
+  const [marketRefreshNonce, setMarketRefreshNonce] = useState(0);
+  const [sessionUser, setSessionUser] = useState<User | null>(null);
+  const [workspaceStatus, setWorkspaceStatus] = useState<"local" | "connecting" | "synced" | "error">("local");
   const [toast, setToast] = useState("");
   const layoutLoaded = useRef(false);
+  const remoteSyncReady = useRef(false);
+  const lastSyncedLayoutFingerprint = useRef("");
+  const currentLayoutRef = useRef<SavedLayout | null>(null);
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const supabaseReady = isSupabaseBrowserConfigured();
-  const finnhubToken = process.env.NEXT_PUBLIC_FINNHUB_API_KEY ?? "";
-  const finnhubEnabled =
-    process.env.NEXT_PUBLIC_MARKET_DATA_PROVIDER === "finnhub" && Boolean(finnhubToken);
+
+  currentLayoutRef.current = createSavedLayout({
+    instruments: availableInstruments,
+    cards,
+    customIndexes,
+    compactView,
+    activeTab
+  });
+
+  function applySharedLayout(layout: SavedLayout, message?: string) {
+    setAvailableInstruments(mergeInstruments(layout.instruments));
+    setCards(layout.cards);
+    setCustomIndexes(layout.customIndexes);
+    setCompactView(layout.compactView);
+    setActiveTab(layout.activeTab);
+    lastSyncedLayoutFingerprint.current = layoutFingerprint(layout);
+
+    if (message) {
+      setToast(message);
+    }
+  }
 
   useEffect(() => {
     const savedLayout = readSavedLayout(window.localStorage);
@@ -723,59 +749,185 @@ export function WatchlistApp() {
   }, []);
 
   useEffect(() => {
+    const authError = new URLSearchParams(window.location.search).get("auth_error");
+
+    if (authError) {
+      setToast(`Discord認証エラー: ${authError}`);
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!supabase) {
+      return;
+    }
+
+    let active = true;
+
+    void supabase.auth.getSession().then(({ data }) => {
+      if (active) {
+        setSessionUser(data.session?.user ?? null);
+      }
+    });
+
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSessionUser(session?.user ?? null);
+    });
+
+    return () => {
+      active = false;
+      data.subscription.unsubscribe();
+    };
+  }, [supabase]);
+
+  useEffect(() => {
+    if (!supabase || !sessionUser || !layoutLoaded.current) {
+      remoteSyncReady.current = false;
+      setWorkspaceStatus("local");
+      return;
+    }
+
+    const client = supabase;
+    const userId = sessionUser.id;
+    let cancelled = false;
+    setWorkspaceStatus("connecting");
+
+    const channel = client
+      .channel(`workspace:${sharedWorkspaceKey}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "shared_workspace_state",
+          filter: `workspace_key=eq.${sharedWorkspaceKey}`
+        },
+        (payload) => {
+          const remoteLayout = parseSavedLayout((payload.new as { layout?: unknown }).layout);
+
+          if (!remoteLayout || layoutFingerprint(remoteLayout) === lastSyncedLayoutFingerprint.current) {
+            return;
+          }
+
+          applySharedLayout(remoteLayout, "共有ワークスペースを同期しました");
+          setWorkspaceStatus("synced");
+        }
+      )
+      .subscribe((status) => {
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          setWorkspaceStatus("error");
+        }
+      });
+
+    async function loadSharedWorkspace() {
+      const { data, error } = await client
+        .from("shared_workspace_state")
+        .select("layout, revision, updated_at")
+        .eq("workspace_key", sharedWorkspaceKey)
+        .maybeSingle();
+
+      if (error) {
+        throw error;
+      }
+
+      const remoteLayout = parseSavedLayout(data?.layout);
+
+      if (remoteLayout) {
+        applySharedLayout(remoteLayout, "共有ワークスペースを読み込みました");
+      } else if (currentLayoutRef.current) {
+        const initialLayout = currentLayoutRef.current;
+        const { error: updateError } = await client
+          .from("shared_workspace_state")
+          .update({
+            layout: initialLayout,
+            revision: Date.now(),
+            updated_by: userId,
+            updated_at: new Date().toISOString()
+          })
+          .eq("workspace_key", sharedWorkspaceKey);
+
+        if (updateError) {
+          throw updateError;
+        }
+
+        lastSyncedLayoutFingerprint.current = layoutFingerprint(initialLayout);
+      }
+
+      if (!cancelled) {
+        remoteSyncReady.current = true;
+        setWorkspaceStatus("synced");
+      }
+    }
+
+    void loadSharedWorkspace().catch((error: unknown) => {
+      if (!cancelled) {
+        remoteSyncReady.current = false;
+        setWorkspaceStatus("error");
+        const message = error instanceof Error ? error.message : "unknown error";
+        setToast(`共有同期を開始できません: ${message}`);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      remoteSyncReady.current = false;
+      void client.removeChannel(channel);
+    };
+  }, [sessionUser?.id, supabase]);
+
+  useEffect(() => {
     if (!layoutLoaded.current) {
       return;
     }
 
-    try {
-      writeSavedLayout(window.localStorage, {
-        instruments: availableInstruments,
-        cards,
-        customIndexes,
-        compactView,
-        activeTab
-      });
-    } catch {
-      setToast("Layout save failed");
-    }
-  }, [activeTab, availableInstruments, cards, compactView, customIndexes]);
-
-  useEffect(() => {
-    if (!finnhubEnabled) {
-      setFinnhubStatus("disabled");
-      setLiveInstrumentIds({});
-      return undefined;
-    }
-
-    const subscribedInstruments = cards
-      .filter((card) => card.type === "instrument")
-      .map((card) => availableInstruments.find((instrument) => instrument.id === card.refId))
-      .filter((instrument): instrument is Instrument => Boolean(instrument));
-
-    return connectFinnhubTradeStream({
-      token: finnhubToken,
-      instruments: subscribedInstruments,
-      onStatus: setFinnhubStatus,
-      onTrade: (trade) => {
-        setLiveInstrumentIds((current) => ({
-          ...current,
-          [trade.instrumentId]: true
-        }));
-        setSeriesByInstrument((current) => {
-          const series = current[trade.instrumentId] ?? [];
-          const nextPoint = {
-            time: trade.timestamp,
-            value: formatLivePrice(trade.price)
-          };
-
-          return {
-            ...current,
-            [trade.instrumentId]: appendSeriesPoint(series, nextPoint)
-          };
-        });
-      }
+    const layout = createSavedLayout({
+      instruments: availableInstruments,
+      cards,
+      customIndexes,
+      compactView,
+      activeTab
     });
-  }, [availableInstruments, cards, finnhubEnabled, finnhubToken]);
+
+    try {
+      window.localStorage.setItem(layoutStorageKey, JSON.stringify(layout));
+    } catch {
+      setToast("ローカル保存に失敗しました");
+    }
+
+    if (!supabase || !sessionUser || !remoteSyncReady.current) {
+      return;
+    }
+
+    const fingerprint = layoutFingerprint(layout);
+
+    if (fingerprint === lastSyncedLayoutFingerprint.current) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      void supabase
+        .from("shared_workspace_state")
+        .update({
+          layout,
+          revision: Date.now(),
+          updated_by: sessionUser.id,
+          updated_at: new Date().toISOString()
+        })
+        .eq("workspace_key", sharedWorkspaceKey)
+        .then(({ error }) => {
+          if (error) {
+            setWorkspaceStatus("error");
+            setToast(`共有保存に失敗しました: ${error.message}`);
+            return;
+          }
+
+          lastSyncedLayoutFingerprint.current = fingerprint;
+          setWorkspaceStatus("synced");
+        });
+    }, 700);
+
+    return () => window.clearTimeout(timeout);
+  }, [activeTab, availableInstruments, cards, compactView, customIndexes, sessionUser, supabase]);
 
   useEffect(() => {
     let cancelled = false;
@@ -981,13 +1133,13 @@ export function WatchlistApp() {
           setSnapshotError(true);
         }
       });
-    }, 20_000);
+    }, snapshotPollIntervalMs);
 
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [availableInstruments, cards]);
+  }, [availableInstruments, cards, marketRefreshNonce]);
 
   useEffect(() => {
     if (!toast) {
@@ -1016,12 +1168,8 @@ export function WatchlistApp() {
           }
 
           const series = seriesByInstrument[instrument.id] ?? [];
-          let quote: Quote | null =
+          const quote: Quote | null =
             quoteOverrides[instrument.id] ?? buildQuoteFromSeries(instrument.id, series, "finnhub");
-
-          if (liveInstrumentIds[instrument.id]) {
-            quote = buildQuoteFromSeries(instrument.id, series, "finnhub");
-          }
 
           return {
             id: instrument.id,
@@ -1067,7 +1215,6 @@ export function WatchlistApp() {
     cards,
     customIndexes,
     historyErrors,
-    liveInstrumentIds,
     quoteOverrides,
     serverQuoteSource,
     seriesByInstrument
@@ -1077,15 +1224,25 @@ export function WatchlistApp() {
   const existingInstrumentIds = cards
     .filter((card) => card.type === "instrument")
     .map((card) => card.refId);
-  const marketDataReady = finnhubStatus === "live" || Boolean(serverQuoteSource);
+  const marketDataReady = Boolean(serverQuoteSource);
   const marketDataLabel =
-    finnhubStatus === "live"
-      ? finnhubStatusLabels[finnhubStatus]
-      : serverQuoteSource
-        ? `${sourceLabels[serverQuoteSource]} snapshots`
-        : snapshotError
-          ? "Market data error"
-          : finnhubStatusLabels[finnhubStatus];
+    serverQuoteSource
+      ? `${sourceLabels[serverQuoteSource]} shared cache`
+      : snapshotError
+        ? "Market data error"
+        : "Market data loading";
+  const workspaceConnected = workspaceStatus === "synced";
+  const workspaceStatusLabel = !supabaseReady
+    ? "Supabase未設定"
+    : !sessionUser
+      ? "Discordログイン待ち"
+      : workspaceStatus === "connecting"
+        ? "共有同期中"
+        : workspaceStatus === "synced"
+          ? "共有同期済み"
+          : workspaceStatus === "error"
+            ? "共有同期エラー"
+            : "ローカル編集";
 
   async function loginWithDiscord() {
     if (!supabase) {
@@ -1093,12 +1250,31 @@ export function WatchlistApp() {
       return;
     }
 
-    await supabase.auth.signInWithOAuth({
+    const { error } = await supabase.auth.signInWithOAuth({
       provider: "discord",
       options: {
-        redirectTo: `${window.location.origin}/auth/callback`
+        redirectTo: `${window.location.origin}/auth/callback`,
+        scopes: "identify email"
       }
     });
+
+    if (error) {
+      setToast(`Discord認証を開始できません: ${error.message}`);
+    }
+  }
+
+  async function logout() {
+    if (!supabase) {
+      return;
+    }
+
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      setToast(`ログアウトに失敗しました: ${error.message}`);
+      return;
+    }
+
+    setToast("Discordからログアウトしました");
   }
 
   async function toggleFullscreen() {
@@ -1110,19 +1286,46 @@ export function WatchlistApp() {
     await document.documentElement.requestFullscreen();
   }
 
-  function saveLayoutNow() {
+  async function saveLayoutNow() {
+    const layout = createSavedLayout({
+      instruments: availableInstruments,
+      cards,
+      customIndexes,
+      compactView,
+      activeTab
+    });
+
     try {
-      writeSavedLayout(window.localStorage, {
-        instruments: availableInstruments,
-        cards,
-        customIndexes,
-        compactView,
-        activeTab
-      });
-      setToast("Layout saved");
+      window.localStorage.setItem(layoutStorageKey, JSON.stringify(layout));
     } catch {
-      setToast("Layout save failed");
+      setToast("ローカル保存に失敗しました");
+      return;
     }
+
+    if (!supabase || !sessionUser || !remoteSyncReady.current) {
+      setToast("ローカルに保存しました。Discordログイン後は共有保存されます。");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("shared_workspace_state")
+      .update({
+        layout,
+        revision: Date.now(),
+        updated_by: sessionUser.id,
+        updated_at: new Date().toISOString()
+      })
+      .eq("workspace_key", sharedWorkspaceKey);
+
+    if (error) {
+      setWorkspaceStatus("error");
+      setToast(`共有保存に失敗しました: ${error.message}`);
+      return;
+    }
+
+    lastSyncedLayoutFingerprint.current = layoutFingerprint(layout);
+    setWorkspaceStatus("synced");
+    setToast("共有ワークスペースに保存しました");
   }
 
   return (
@@ -1147,19 +1350,19 @@ export function WatchlistApp() {
               <span title="R">R</span>
             </div>
           </div>
-          <div className={`status-pill ${supabaseReady ? "ready" : ""}`}>
-            {supabaseReady ? <Wifi size={15} /> : <WifiOff size={15} />}
-            {supabaseReady ? "Sync ready" : "Local edits"}
+          <div className={`status-pill ${workspaceConnected ? "ready" : ""}`}>
+            {workspaceConnected ? <Wifi size={15} /> : <WifiOff size={15} />}
+            {workspaceStatusLabel}
           </div>
           <div className={`status-pill ${marketDataReady ? "ready" : ""}`}>
             {marketDataReady ? <Wifi size={15} /> : <WifiOff size={15} />}
             {marketDataLabel}
           </div>
-          <button className="ghost-button" onClick={loginWithDiscord}>
+          <button className="ghost-button" onClick={() => void (sessionUser ? logout() : loginWithDiscord())}>
             <LogIn size={17} />
-            Discord
+            {sessionUser ? "Logout" : "Discord"}
           </button>
-          <button className="ghost-button" onClick={saveLayoutNow}>
+          <button className="ghost-button" onClick={() => void saveLayoutNow()}>
             <Save size={17} />
             Save
           </button>
@@ -1201,7 +1404,14 @@ export function WatchlistApp() {
           >
             <Minimize2 size={16} />
           </button>
-          <button className="icon-button muted" title="更新" onClick={() => setToast("価格を再取得しました。")}>
+          <button
+            className="icon-button muted"
+            title="更新"
+            onClick={() => {
+              setMarketRefreshNonce((current) => current + 1);
+              setToast("共有価格キャッシュを再確認しています。");
+            }}
+          >
             <RefreshCw size={16} />
           </button>
         </div>

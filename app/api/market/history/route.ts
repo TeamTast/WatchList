@@ -1,17 +1,35 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getMarketHistory } from "@/lib/market/providers";
+import { withSharedMarketCache } from "@/lib/market/server-cache";
+
+const HISTORY_TTL_MS = 15 * 60_000;
 
 export async function GET(request: NextRequest) {
   const symbols = request.nextUrl.searchParams
     .get("symbols")
     ?.split(",")
     .map((symbol) => symbol.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((symbol, index, all) => all.indexOf(symbol) === index)
+    .sort()
+    .slice(0, 50);
 
   if (!symbols?.length) {
     return NextResponse.json({ histories: [] });
   }
 
-  const histories = await getMarketHistory(symbols);
-  return NextResponse.json({ histories });
+  const histories = await withSharedMarketCache(
+    `history:${process.env.MARKET_DATA_PROVIDER ?? "mock"}:${symbols.join(",")}`,
+    HISTORY_TTL_MS,
+    () => getMarketHistory(symbols)
+  );
+
+  return NextResponse.json(
+    { histories },
+    {
+      headers: {
+        "Cache-Control": "public, s-maxage=900, stale-while-revalidate=3600"
+      }
+    }
+  );
 }

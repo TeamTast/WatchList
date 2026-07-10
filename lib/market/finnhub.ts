@@ -1,25 +1,5 @@
 import type { Instrument } from "@/lib/market/types";
 
-export type FinnhubStatus = "disabled" | "connecting" | "live" | "error" | "closed";
-
-export interface FinnhubTrade {
-  instrumentId: string;
-  symbol: string;
-  price: number;
-  volume?: number;
-  timestamp: number;
-}
-
-interface FinnhubTradeMessage {
-  type?: string;
-  data?: Array<{
-    s: string;
-    p: number;
-    t: number;
-    v?: number;
-  }>;
-}
-
 const explicitFinnhubSymbols: Record<string, string> = {
   aapl: "AAPL",
   nvda: "NVDA",
@@ -54,83 +34,4 @@ export function toFinnhubSymbol(providerSymbol: string) {
 
 export function getFinnhubSymbol(instrument: Instrument) {
   return explicitFinnhubSymbols[instrument.id] ?? toFinnhubSymbol(instrument.providerSymbol);
-}
-
-export function connectFinnhubTradeStream({
-  token,
-  instruments,
-  onTrade,
-  onStatus
-}: {
-  token: string;
-  instruments: Instrument[];
-  onTrade: (trade: FinnhubTrade) => void;
-  onStatus: (status: FinnhubStatus) => void;
-}) {
-  const symbols = instruments
-    .map((instrument) => ({
-      instrumentId: instrument.id,
-      symbol: getFinnhubSymbol(instrument)
-    }))
-    .filter((item) => Boolean(item.symbol));
-
-  if (!token || !symbols.length) {
-    onStatus("disabled");
-    return () => undefined;
-  }
-
-  const symbolToInstrumentId = new Map(symbols.map((item) => [item.symbol, item.instrumentId]));
-  const socket = new WebSocket(`wss://ws.finnhub.io?token=${encodeURIComponent(token)}`);
-
-  onStatus("connecting");
-
-  socket.addEventListener("open", () => {
-    onStatus("live");
-    symbols.forEach(({ symbol }) => {
-      socket.send(JSON.stringify({ type: "subscribe", symbol }));
-    });
-  });
-
-  socket.addEventListener("message", (event) => {
-    let message: FinnhubTradeMessage;
-
-    try {
-      message = JSON.parse(String(event.data)) as FinnhubTradeMessage;
-    } catch {
-      return;
-    }
-
-    if (message.type !== "trade" || !message.data) {
-      return;
-    }
-
-    message.data.forEach((item) => {
-      const instrumentId = symbolToInstrumentId.get(item.s);
-
-      if (!instrumentId || !Number.isFinite(item.p)) {
-        return;
-      }
-
-      onTrade({
-        instrumentId,
-        symbol: item.s,
-        price: item.p,
-        volume: item.v,
-        timestamp: item.t
-      });
-    });
-  });
-
-  socket.addEventListener("error", () => onStatus("error"));
-  socket.addEventListener("close", () => onStatus("closed"));
-
-  return () => {
-    if (socket.readyState === WebSocket.OPEN) {
-      symbols.forEach(({ symbol }) => {
-        socket.send(JSON.stringify({ type: "unsubscribe", symbol }));
-      });
-    }
-
-    socket.close();
-  };
 }

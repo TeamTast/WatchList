@@ -1,16 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" fill="#d7ff43" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 64">
+  <rect width="56" height="64" fill="#ff3b30" />
   <text
-    x="7"
+    x="5"
     y="27"
     fill="#090909"
     font-family="Arial, Helvetica, sans-serif"
-    font-size="23"
+    font-size="21"
     font-weight="900"
     letter-spacing="-2"
   >W/L</text>
   <text
-    x="43"
+    x="35"
     y="56"
     fill="#090909"
     font-family="Arial, Helvetica, sans-serif"

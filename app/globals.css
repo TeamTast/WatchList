@@ -154,7 +154,7 @@ p {
   gap: clamp(24px, 4vw, 72px);
   align-items: stretch;
   padding: 18px 0 24px;
-  border-top: 6px solid var(--accent);
+  border-top: 1px solid var(--line-strong);
   border-bottom: 1px solid var(--line-strong);
 }
 
@@ -217,7 +217,9 @@ h1 {
 }
 
 h1 span {
-  color: var(--accent);
+  color: transparent;
+  -webkit-text-stroke: 2px var(--text);
+  paint-order: stroke fill;
 }
 
 .scramble-text,
@@ -1126,7 +1128,6 @@ h1 span {
   grid-template-columns: auto 1fr;
   gap: 4px 9px;
   border: 1px solid var(--line-strong);
-  border-left: 3px solid var(--accent);
   padding: 8px 9px;
   color: var(--text);
   background: color-mix(in srgb, var(--surface-raised) 84%, transparent);

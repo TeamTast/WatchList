@@ -3032,6 +3032,16 @@ export function WatchlistApp() {
             onDragEnd={() => setDraggingId(null)}
           />
         ))}
+        <button
+          type="button"
+          className="add-card-button"
+          aria-label="新たな銘柄を追加"
+          title="新たな銘柄を追加"
+          onClick={() => setAddOpen(true)}
+        >
+          <Plus size={34} strokeWidth={1.5} aria-hidden="true" />
+          <span>銘柄を追加</span>
+        </button>
       </section>
 
       {addOpen ? (

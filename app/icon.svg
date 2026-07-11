@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" fill="#d7ff43" />
+  <text
+    x="7"
+    y="27"
+    fill="#090909"
+    font-family="Arial, Helvetica, sans-serif"
+    font-size="23"
+    font-weight="900"
+    letter-spacing="-2"
+  >W/L</text>
+  <text
+    x="43"
+    y="56"
+    fill="#090909"
+    font-family="Arial, Helvetica, sans-serif"
+    font-size="11"
+    font-weight="800"
+    letter-spacing="1"
+  >01</text>
+</svg>

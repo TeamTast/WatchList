@@ -15,17 +15,20 @@ export async function GET(request: NextRequest) {
     .slice(0, 50);
 
   if (!symbols?.length) {
-    return NextResponse.json({ histories: [] });
+    return NextResponse.json({ histories: [], fetchedAt: null });
   }
 
-  const histories = await withSharedMarketCache(
+  const history = await withSharedMarketCache(
     `history:${process.env.MARKET_DATA_PROVIDER ?? "mock"}:${symbols.join(",")}`,
     HISTORY_TTL_MS,
-    () => getMarketHistory(symbols)
+    async () => ({
+      histories: await getMarketHistory(symbols),
+      fetchedAt: new Date().toISOString()
+    })
   );
 
   return NextResponse.json(
-    { histories },
+    history,
     {
       headers: {
         "Cache-Control": "public, s-maxage=900, stale-while-revalidate=3600"

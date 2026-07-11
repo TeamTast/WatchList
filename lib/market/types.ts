@@ -37,6 +37,7 @@ export interface WatchCard {
   id: string;
   type: "instrument" | "index";
   refId: string;
+  size?: "normal" | "large";
 }
 
 export interface CustomIndexMember {
@@ -66,4 +67,6 @@ export interface MarketCardView {
   providerSymbol?: string;
   status: "loading" | "ready" | "unavailable";
   message?: string;
+  displaySize: "normal" | "large";
+  fetchedAt: string | null;
 }

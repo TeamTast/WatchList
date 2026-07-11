@@ -3,10 +3,12 @@
 import {
   AlertTriangle,
   BarChart3,
+  Clock3,
   FolderKanban,
   GripVertical,
   LogIn,
   LockKeyhole,
+  Maximize2,
   Minimize2,
   Moon,
   Plus,
@@ -43,6 +45,7 @@ import type {
 } from "@/lib/market/types";
 import type { DiscordGuild, SpaceKind, SpaceSummary, SpacesResponse } from "@/lib/spaces/types";
 import { createSupabaseBrowserClient, isSupabaseBrowserConfigured } from "@/lib/supabase/client";
+import { ScrambleText } from "@/components/scramble-text";
 
 const tabs: Array<{ key: "ALL" | MarketRegion; label: string }> = [
   { key: "ALL", label: "All" },
@@ -146,6 +149,7 @@ type SharedLayout = Omit<SavedLayout, "activeTab" | "compactView">;
 
 interface SnapshotResponse {
   quotes: Quote[];
+  fetchedAt: string | null;
 }
 
 interface HistoryResponse {
@@ -156,6 +160,20 @@ interface HistoryResponse {
     source: Quote["source"] | null;
     error?: string;
   }>;
+  fetchedAt: string | null;
+}
+
+function formatFetchedAt(value: string) {
+  return new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(new Date(value));
 }
 
 interface InstrumentLookupResponse {
@@ -520,7 +538,7 @@ function EditableCardName({ name, onRename }: { name: string; onRename: (name: s
       title="ダブルクリックで名前を変更"
       onDoubleClick={() => setEditing(true)}
     >
-      {name}
+      <ScrambleText text={name} delay={80} stepDuration={44} />
     </span>
   );
 }
@@ -557,17 +575,24 @@ function Sparkline({
   series,
   tone,
   currency,
-  previousClose
+  previousClose,
+  dayHigh,
+  dayLow,
+  detailed = false
 }: {
   series: SeriesPoint[];
   tone: "positive" | "negative" | "neutral";
   currency: MarketCardView["currency"];
   previousClose: number;
+  dayHigh: number;
+  dayLow: number;
+  detailed?: boolean;
 }) {
-  const width = 420;
-  const height = 128;
+  const width = detailed ? 840 : 420;
+  const height = detailed ? 300 : 128;
   const padding = 10;
   const tooltipId = useId();
+  const comparisonGradientId = useId().replace(/:/g, "");
   const svgRef = useRef<SVGSVGElement>(null);
   const touchActive = useRef(false);
   const leaderScaleRatio = useRef(1);
@@ -634,7 +659,48 @@ function Sparkline({
     && Number.isFinite(previousClose)
     && previousClose >= min
     && previousClose <= max;
-  const previousCloseY = valueToY(previousClose);
+  const previousCloseY = Number.isFinite(previousClose)
+    ? previousClose < min
+      ? height
+      : previousClose > max
+        ? 0
+        : valueToY(previousClose)
+    : height / 2;
+  const comparisonBoundary = Math.max(0, Math.min(100, (previousCloseY / height) * 100));
+  const comparisonPaint = Number.isFinite(previousClose) && !(isFlatSeries && previousClose === min)
+    ? `url(#${comparisonGradientId})`
+    : "var(--neutral)";
+  const toneForValue = (value: number) => {
+    if (!Number.isFinite(previousClose)) {
+      return tone;
+    }
+
+    if (value > previousClose) {
+      return "positive";
+    }
+
+    if (value < previousClose) {
+      return "negative";
+    }
+
+    return "neutral";
+  };
+  const terminalTone = terminalPoint ? toneForValue(terminalPoint.point.value) : tone;
+  const activeTone = activePoint ? toneForValue(activePoint.point.value) : tone;
+  const roughStep = range / 5;
+  const stepMagnitude = 10 ** Math.floor(Math.log10(roughStep));
+  const normalizedStep = roughStep / stepMagnitude;
+  const niceStep = (normalizedStep <= 1 ? 1 : normalizedStep <= 2 ? 2 : normalizedStep <= 5 ? 5 : 10) * stepMagnitude;
+  const firstTick = Math.ceil(min / niceStep) * niceStep;
+  const priceTicks = detailed && Number.isFinite(niceStep)
+    ? Array.from({ length: Math.max(0, Math.floor((max - firstTick) / niceStep) + 1) }, (_, index) => firstTick + index * niceStep)
+    : [];
+  const timeTicks = detailed && points.length
+    ? Array.from({ length: 5 }, (_, index) => ({
+        x: padding + (index / 4) * (width - padding * 2),
+        time: minTime + (index / 4) * timeRange
+      }))
+    : [];
 
   function cancelPendingAnchor() {
     if (anchorTimeoutRef.current !== null) {
@@ -749,7 +815,7 @@ function Sparkline({
   }
 
   return (
-    <figure className="chart-frame">
+    <figure className={`chart-frame ${detailed ? "chart-frame-detailed" : ""}`}>
       <div
         className="chart-plot"
         role="slider"
@@ -804,9 +870,45 @@ function Sparkline({
         onDragStart={(event) => event.preventDefault()}
       >
         <span className="chart-axis chart-axis-y" aria-hidden="true">Y / price</span>
-        <span className="chart-axis chart-axis-x" aria-hidden="true">X / time · JST</span>
+        <div className="chart-info-row" aria-hidden="true">
+          <span>Hi {formatPrice(dayHigh, currency)}</span>
+          <span>Lo {formatPrice(dayLow, currency)}</span>
+          <span className="chart-info-axis">X / time · JST</span>
+        </div>
         <svg ref={svgRef} className="sparkline" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
           <title>{`価格推移、${orderedSeries.length}点、安値${formatPrice(min, currency)}、高値${formatPrice(max, currency)}`}</title>
+          <defs>
+            <linearGradient
+              id={comparisonGradientId}
+              gradientUnits="userSpaceOnUse"
+              x1="0"
+              x2="0"
+              y1="0"
+              y2={height}
+            >
+              <stop offset="0%" stopColor="var(--positive)" />
+              <stop offset={`${comparisonBoundary}%`} stopColor="var(--positive)" />
+              <stop offset={`${comparisonBoundary}%`} stopColor="var(--negative)" />
+              <stop offset="100%" stopColor="var(--negative)" />
+            </linearGradient>
+          </defs>
+          {priceTicks.map((tick) => {
+            const y = valueToY(tick);
+            return (
+              <g className="chart-price-tick" key={tick}>
+                <line x1={padding} x2={width - padding} y1={y} y2={y} />
+                <text x={width - padding - 5} y={y - 5} textAnchor="end">{formatPrice(tick, currency)}</text>
+              </g>
+            );
+          })}
+          {timeTicks.map((tick, index) => (
+            <g className="chart-time-tick" key={`${tick.time}-${index}`}>
+              <line x1={tick.x} x2={tick.x} y1={padding} y2={height - padding} />
+              <text x={tick.x} y={height - 20} textAnchor={index === 0 ? "start" : index === 4 ? "end" : "middle"}>
+                {new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(tick.time))}
+              </text>
+            </g>
+          ))}
           {showPreviousClose ? (
             <line
               className="sparkline-previous-close"
@@ -818,11 +920,11 @@ function Sparkline({
           ) : null}
           {points.length > 1 ? (
             <>
-              <path d={area} fill={`var(--${tone})`} opacity="0.04" />
+              <path d={area} fill={comparisonPaint} opacity="0.055" />
               <path
                 d={line}
                 fill="none"
-                stroke={`var(--${tone})`}
+                stroke={comparisonPaint}
                 strokeLinecap="square"
                 strokeLinejoin="miter"
                 strokeWidth="1.6"
@@ -835,7 +937,7 @@ function Sparkline({
               x2={width - padding}
               y1={singleY}
               y2={singleY}
-              stroke={`var(--${tone})`}
+              stroke={`var(--${toneForValue(points[0].point.value)})`}
               strokeDasharray="3 6"
               strokeOpacity="0.42"
               strokeWidth="1.4"
@@ -850,7 +952,7 @@ function Sparkline({
                 x2={width - padding}
                 y1={terminalPoint.y}
                 y2={terminalPoint.y}
-                stroke={`var(--${tone})`}
+                stroke={`var(--${terminalTone})`}
               />
               <rect
                 className="sparkline-terminal"
@@ -858,7 +960,7 @@ function Sparkline({
                 y={terminalPoint.y - 2.5}
                 width="5"
                 height="5"
-                stroke={`var(--${tone})`}
+                stroke={`var(--${terminalTone})`}
               />
             </>
           ) : null}
@@ -876,7 +978,7 @@ function Sparkline({
                 width="7"
                 height="7"
                 fill="var(--surface)"
-                stroke={`var(--${tone})`}
+                stroke={`var(--${activeTone})`}
                 strokeWidth="1.5"
                 vectorEffect="non-scaling-stroke"
               />
@@ -906,6 +1008,7 @@ function MarketCard({
   dragging,
   onRemove,
   onManageIndex,
+  onToggleSize,
   onRename,
   onDragStart,
   onDragEnter,
@@ -915,6 +1018,7 @@ function MarketCard({
   dragging: boolean;
   onRemove: (id: string) => void;
   onManageIndex: (id: string) => void;
+  onToggleSize: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onDragStart: (id: string) => void;
   onDragEnter: (id: string) => void;
@@ -925,7 +1029,7 @@ function MarketCard({
 
   return (
     <article
-      className={`market-card ${dragging ? "dragging" : ""}`}
+      className={`market-card ${card.displaySize === "large" ? "market-card-large" : ""} ${dragging ? "dragging" : ""}`}
       onDragEnter={() => onDragEnter(card.id)}
       onDragOver={(event) => event.preventDefault()}
       onDragEnd={onDragEnd}
@@ -951,7 +1055,9 @@ function MarketCard({
                 <EditableCardName name={card.symbol} onRename={(name) => onRename(card.id, name)} />
                 <span className={`market-pill ${card.market.toLowerCase()}`}>{marketLabels[card.market]}</span>
               </div>
-              <span className="ticker-code">{card.name}</span>
+              <span className="ticker-code">
+                <ScrambleText text={card.name} delay={130} stepDuration={38} />
+              </span>
             </>
           ) : (
             <>
@@ -959,11 +1065,22 @@ function MarketCard({
                 <EditableCardName name={card.name} onRename={(name) => onRename(card.id, name)} />
                 <span className={`market-pill ${card.market.toLowerCase()}`}>{marketLabels[card.market]}</span>
               </div>
-              <span className="ticker-code">{card.symbol}</span>
+              <span className="ticker-code">
+                <ScrambleText text={card.symbol} delay={130} stepDuration={38} />
+              </span>
             </>
           )}
         </div>
         <div className="card-actions">
+          <button
+            className="icon-button card-size-toggle"
+            title={card.displaySize === "large" ? "通常サイズに戻す" : "特大カードにする"}
+            aria-label={card.displaySize === "large" ? "通常サイズに戻す" : "特大カードにする"}
+            aria-pressed={card.displaySize === "large"}
+            onClick={() => onToggleSize(card.id)}
+          >
+            {card.displaySize === "large" ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+          </button>
           {card.assetClass === "custom_index" ? (
             <button
               className="icon-button manage-index"
@@ -985,7 +1102,13 @@ function MarketCard({
           <div className="price-row">
             <div className="price-metric">
               <div>
-                <span className="price">{formatPrice(card.quote.price, card.currency)}</span>
+                <span className="price">
+                  <ScrambleText
+                    text={formatPrice(card.quote.price, card.currency)}
+                    delay={40}
+                    stepDuration={42}
+                  />
+                </span>
                 <span className="currency">{card.currency === "PAIR" ? "" : card.currency}</span>
               </div>
             </div>
@@ -1004,6 +1127,9 @@ function MarketCard({
             tone={changeClass}
             currency={card.currency}
             previousClose={card.quote.previousClose}
+            dayHigh={card.quote.dayHigh}
+            dayLow={card.quote.dayLow}
+            detailed={card.displaySize === "large"}
           />
         </>
       ) : (
@@ -1013,17 +1139,15 @@ function MarketCard({
         </div>
       )}
 
-      <footer className="card-meta">
-        <span>
-          {assetLabels[card.assetClass]} · {card.quote ? sourceLabels[card.quote.source] : "No data"}
-        </span>
-        {card.quote ? (
-          <>
-            <span>Hi {formatPrice(card.quote.dayHigh, card.currency)}</span>
-            <span>Lo {formatPrice(card.quote.dayLow, card.currency)}</span>
-          </>
-        ) : null}
-      </footer>
+      {card.displaySize === "large" ? (
+        <footer className="card-meta">
+          <span>
+            {assetLabels[card.assetClass]} / {card.fetchedAt
+              ? `最終更新 ${formatFetchedAt(card.fetchedAt)} JST`
+              : "最終更新 取得中"}
+          </span>
+        </footer>
+      ) : null}
     </article>
   );
 }
@@ -1793,8 +1917,10 @@ export function WatchlistApp() {
   const [pendingDeleteIndexId, setPendingDeleteIndexId] = useState<string | null>(null);
   const [compactView, setCompactView] = useState(false);
   const [theme, setTheme] = useState<Theme>("dark");
+  const [localTime, setLocalTime] = useState<Date | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [quoteOverrides, setQuoteOverrides] = useState<Record<string, Quote>>({});
+  const [fetchedAtByInstrument, setFetchedAtByInstrument] = useState<Record<string, string>>({});
   const [historyErrors, setHistoryErrors] = useState<Record<string, string>>({});
   const [serverQuoteSource, setServerQuoteSource] = useState<Quote["source"] | null>(null);
   const [snapshotError, setSnapshotError] = useState(false);
@@ -1979,6 +2105,14 @@ export function WatchlistApp() {
     const initialTheme = document.documentElement.dataset.theme === "light" ? "light" : "dark";
     setTheme(initialTheme);
     applyDocumentTheme(initialTheme);
+  }, []);
+
+  useEffect(() => {
+    const updateLocalTime = () => setLocalTime(new Date());
+    updateLocalTime();
+
+    const intervalId = window.setInterval(updateLocalTime, 1_000);
+    return () => window.clearInterval(intervalId);
   }, []);
 
   useEffect(() => {
@@ -2262,6 +2396,12 @@ export function WatchlistApp() {
         ...current,
         ...quoteUpdates
       }));
+      if (payload.fetchedAt) {
+        setFetchedAtByInstrument((current) => ({
+          ...current,
+          ...Object.fromEntries(Object.keys(seriesUpdates).map((instrumentId) => [instrumentId, payload.fetchedAt as string]))
+        }));
+      }
       setHistoryErrors((current) => {
         const next = {
           ...current,
@@ -2383,6 +2523,12 @@ export function WatchlistApp() {
         ...current,
         ...Object.fromEntries(updates.map((update) => [update.instrument.id, update.quote]))
       }));
+      if (payload.fetchedAt) {
+        setFetchedAtByInstrument((current) => ({
+          ...current,
+          ...Object.fromEntries(updates.map((update) => [update.instrument.id, payload.fetchedAt as string]))
+        }));
+      }
       setSeriesByInstrument((current) => {
         const next = { ...current };
 
@@ -2476,6 +2622,8 @@ export function WatchlistApp() {
             providerSymbol: instrument.providerSymbol,
             quote,
             series,
+            displaySize: card.size ?? "normal",
+            fetchedAt: fetchedAtByInstrument[instrument.id] ?? null,
             status: quote && series.length ? "ready" : historyErrors[instrument.id] ? "unavailable" : "loading",
             message: historyErrors[instrument.id]
           };
@@ -2498,6 +2646,12 @@ export function WatchlistApp() {
           currency: "PAIR" as const,
           quote,
           series,
+          displaySize: card.size ?? "normal",
+          fetchedAt: customIndex.members
+            .map((member) => fetchedAtByInstrument[member.instrumentId])
+            .filter((value): value is string => Boolean(value))
+            .sort()
+            .at(-1) ?? null,
           status: quote ? "ready" as const : "unavailable" as const,
           message: quote ? undefined : "指数の構成銘柄データを取得できませんでした。"
         };
@@ -2509,6 +2663,7 @@ export function WatchlistApp() {
     availableInstruments,
     cards,
     customIndexes,
+    fetchedAtByInstrument,
     historyErrors,
     quoteOverrides,
     serverQuoteSource,
@@ -2712,6 +2867,20 @@ export function WatchlistApp() {
               <span>{activeSpace ? `${activeSpace.guildName ? `${activeSpace.guildName} / ` : ""}${activeSpace.name}` : "Local workspace"}</span>
             </div>
             <div className="status-group">
+              <time className="local-clock" dateTime={localTime?.toISOString()}>
+                <Clock3 size={14} aria-hidden="true" />
+                <span>Local</span>
+                <strong>
+                  {localTime
+                    ? new Intl.DateTimeFormat("en-GB", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit",
+                        hourCycle: "h23"
+                      }).format(localTime)
+                    : "--:--:--"}
+                </strong>
+              </time>
               <div className={`status-pill ${workspaceConnected ? "ready" : ""}`}>
                 {workspaceConnected ? <Wifi size={14} /> : <WifiOff size={14} />}
                 {workspaceStatusLabel}
@@ -2846,6 +3015,11 @@ export function WatchlistApp() {
               }
             }}
             onManageIndex={setManagedIndexId}
+            onToggleSize={(id) => setCards((current) => current.map((watchCard) =>
+              watchCard.refId === id
+                ? { ...watchCard, size: watchCard.size === "large" ? "normal" : "large" }
+                : watchCard
+            ))}
             onRename={renameCard}
             onDragStart={(id) => setDraggingId(id)}
             onDragEnter={(overId) => {

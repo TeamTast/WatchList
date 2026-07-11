@@ -2,13 +2,13 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "WatchList",
-  description: "A shared market desk for US stocks, Japan stocks, FX, and custom indexes."
+  title: "WatchList — Market Operations Desk",
+  description: "A shared market operations desk for US stocks, Japan stocks, FX, and custom indexes."
 };
 
 export const viewport: Viewport = {
   colorScheme: "dark light",
-  themeColor: "#0a0a0a"
+  themeColor: "#080a0b"
 };
 
 const themeScript = `
@@ -18,7 +18,7 @@ const themeScript = `
       const theme = savedTheme === "light" ? "light" : "dark";
       document.documentElement.dataset.theme = theme;
       document.documentElement.style.colorScheme = theme;
-      document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#eeede6" : "#090909");
+      document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#ece9e1" : "#080a0b");
     } catch {
       document.documentElement.dataset.theme = "dark";
       document.documentElement.style.colorScheme = "dark";

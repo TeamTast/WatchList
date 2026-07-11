@@ -45,7 +45,6 @@ import type {
 } from "@/lib/market/types";
 import type { DiscordGuild, SpaceKind, SpaceSummary, SpacesResponse } from "@/lib/spaces/types";
 import { createSupabaseBrowserClient, isSupabaseBrowserConfigured } from "@/lib/supabase/client";
-import { ScrambleText } from "@/components/scramble-text";
 
 const tabs: Array<{ key: "ALL" | MarketRegion; label: string }> = [
   { key: "ALL", label: "All" },
@@ -114,7 +113,7 @@ type UndoDeletion = {
 function applyDocumentTheme(theme: Theme) {
   document.documentElement.dataset.theme = theme;
   document.documentElement.style.colorScheme = theme;
-  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#eeede6" : "#090909");
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#ece9e1" : "#080a0b");
 }
 
 function isUsRegularSession(date = new Date()) {
@@ -631,7 +630,7 @@ function EditableCardName({ name, onRename }: { name: string; onRename: (name: s
       title="ダブルクリックで名前を変更"
       onDoubleClick={() => setEditing(true)}
     >
-      <ScrambleText text={name} delay={80} stepDuration={44} />
+      {name}
     </span>
   );
 }
@@ -1098,6 +1097,7 @@ function Sparkline({
 
 function MarketCard({
   card,
+  sequence,
   dragging,
   onRemove,
   onManageIndex,
@@ -1108,6 +1108,7 @@ function MarketCard({
   onDragEnd
 }: {
   card: MarketCardView;
+  sequence: number;
   dragging: boolean;
   onRemove: (id: string) => void;
   onManageIndex: (id: string) => void;
@@ -1123,24 +1124,28 @@ function MarketCard({
   return (
     <article
       className={`market-card ${card.displaySize === "large" ? "market-card-large" : ""} ${dragging ? "dragging" : ""}`}
+      data-market={card.market.toLowerCase()}
       onDragEnter={() => onDragEnter(card.id)}
       onDragOver={(event) => event.preventDefault()}
       onDragEnd={onDragEnd}
       onDrop={onDragEnd}
     >
       <header className="card-top">
-        <button
-          className="icon-button muted drag-handle"
-          draggable
-          aria-label="並べ替え"
-          title="並べ替え"
-          onDragStart={(event) => {
-            event.dataTransfer.effectAllowed = "move";
-            onDragStart(card.id);
-          }}
-        >
-          <GripVertical size={17} />
-        </button>
+        <div className="instrument-index">
+          <span>{String(sequence).padStart(2, "0")}</span>
+          <button
+            className="icon-button muted drag-handle"
+            draggable
+            aria-label="並べ替え"
+            title="並べ替え"
+            onDragStart={(event) => {
+              event.dataTransfer.effectAllowed = "move";
+              onDragStart(card.id);
+            }}
+          >
+            <GripVertical size={17} />
+          </button>
+        </div>
         <div className="symbol-block">
           {card.assetClass === "custom_index" ? (
             <>
@@ -1149,7 +1154,7 @@ function MarketCard({
                 <span className={`market-pill ${card.market.toLowerCase()}`}>{marketLabels[card.market]}</span>
               </div>
               <span className="ticker-code">
-                <ScrambleText text={card.name} delay={130} stepDuration={38} />
+                {card.name}
               </span>
             </>
           ) : (
@@ -1159,10 +1164,13 @@ function MarketCard({
                 <span className={`market-pill ${card.market.toLowerCase()}`}>{marketLabels[card.market]}</span>
               </div>
               <span className="ticker-code">
-                <ScrambleText text={card.symbol} delay={130} stepDuration={38} />
+                {card.symbol}
               </span>
             </>
           )}
+          <span className="instrument-state">
+            {card.status === "ready" ? "Live / shared" : card.status === "loading" ? "Awaiting feed" : "Feed unavailable"}
+          </span>
         </div>
         <div className="card-actions">
           <button
@@ -1196,11 +1204,7 @@ function MarketCard({
             <div className="price-metric">
               <div>
                 <span className="price">
-                  <ScrambleText
-                    text={formatPrice(card.quote.price, card.currency)}
-                    delay={40}
-                    stepDuration={42}
-                  />
+                  {formatPrice(card.quote.price, card.currency)}
                 </span>
                 <span className="currency">{card.currency === "PAIR" ? "" : card.currency}</span>
               </div>
@@ -1232,15 +1236,10 @@ function MarketCard({
         </div>
       )}
 
-      {card.displaySize === "large" ? (
-        <footer className="card-meta">
-          <span>
-            {assetLabels[card.assetClass]} / {card.fetchedAt
-              ? `最終更新 ${formatFetchedAt(card.fetchedAt)} JST`
-              : "最終更新 取得中"}
-          </span>
-        </footer>
-      ) : null}
+      <footer className="card-meta">
+        <span>{assetLabels[card.assetClass]}</span>
+        <span>{card.fetchedAt ? `Updated ${formatFetchedAt(card.fetchedAt)} JST` : "Update pending"}</span>
+      </footer>
     </article>
   );
 }
@@ -2806,6 +2805,24 @@ export function WatchlistApp() {
   ]);
 
   const visibleCards = cardViews.filter((card) => activeTab === "ALL" || card.market === activeTab);
+  const quotedVisibleCards = visibleCards.filter(
+    (card): card is MarketCardView & { quote: Quote } => card.quote !== null
+  );
+  const leadMover = quotedVisibleCards.reduce<(MarketCardView & { quote: Quote }) | null>(
+    (current, card) =>
+      !current || Math.abs(card.quote.changePercent) > Math.abs(current.quote.changePercent) ? card : current,
+    null
+  );
+  const advancingCount = quotedVisibleCards.filter((card) => card.quote.changePercent > 0).length;
+  const decliningCount = quotedVisibleCards.filter((card) => card.quote.changePercent < 0).length;
+  const advanceShare = quotedVisibleCards.length
+    ? Math.round((advancingCount / quotedVisibleCards.length) * 100)
+    : 0;
+  const leadMoverClass = leadMover ? classForChange(leadMover.quote.changePercent) : "neutral";
+  const leadMoverPercent = leadMover
+    ? `${leadMover.quote.changePercent >= 0 ? "+" : ""}${leadMover.quote.changePercent.toFixed(2)}%`
+    : "--";
+  const activeTabLabel = tabs.find((tab) => tab.key === activeTab)?.label ?? "All";
   const managedIndex = customIndexes.find((customIndex) => customIndex.id === managedIndexId) ?? null;
   const pendingDeleteIndex = customIndexes.find((customIndex) => customIndex.id === pendingDeleteIndexId) ?? null;
   const existingInstrumentIds = cards
@@ -2996,98 +3013,155 @@ export function WatchlistApp() {
 
   return (
     <main className={`app-shell ${compactView ? "compact" : ""}`}>
-      <header className="workspace-bar">
-        <div className="brand-block">
-          <div className="brand-mark" aria-hidden="true">
+      <header className="system-header">
+        <div className="brand-lockup">
+          <div className="brand-monogram" aria-hidden="true">
             <span>W/L</span>
-            <small>01</small>
+            <small>SYS—01</small>
           </div>
-          <div className="brand-copy">
-            <span className="eyebrow">Market intelligence / Tokyo</span>
-            <h1>Watch<span>List</span></h1>
-            <p>US / Japan / FX — shared market board</p>
+          <div className="brand-meta">
+            <span className="micro-label">Market operations</span>
+            <strong>Tokyo Desk</strong>
+            <small>Shared intelligence terminal</small>
           </div>
         </div>
 
-        <div className="workspace-panel">
-          <div className="workspace-overview">
-            <div className="workspace-chip">
-              <span className="section-index">01</span>
-              {activeSpace?.kind === "private" ? <LockKeyhole size={15} /> : <Server size={15} />}
-              <span>{activeSpace ? `${activeSpace.guildName ? `${activeSpace.guildName} / ` : ""}${activeSpace.name}` : "Local workspace"}</span>
-            </div>
-            <div className="status-group">
-              <LocalClock />
-              <div className={`status-pill ${workspaceConnected ? "ready" : ""}`}>
-                {workspaceConnected ? <Wifi size={14} /> : <WifiOff size={14} />}
-                {workspaceStatusLabel}
-              </div>
-              <div className={`status-pill ${marketDataReady ? "ready" : ""}`}>
-                {marketDataReady ? <Wifi size={14} /> : <WifiOff size={14} />}
-                {marketDataLabel}
-              </div>
-            </div>
+        <div className="system-context">
+          <span className="micro-label">[ Active workspace ]</span>
+          <div className="workspace-chip">
+            {activeSpace?.kind === "private" ? <LockKeyhole size={15} /> : <Server size={15} />}
+            <span>{activeSpace ? `${activeSpace.guildName ? `${activeSpace.guildName} / ` : ""}${activeSpace.name}` : "Local workspace"}</span>
           </div>
-          <div className="toolbar">
-            {sessionUser ? (
-              <div className="space-switcher">
-                <FolderKanban size={16} />
-                <select
-                  aria-label="スペースを選択"
-                  value={activeSpaceId ?? ""}
-                  disabled={spacesLoading || !spaces.length}
-                  onChange={(event) => switchSpace(event.target.value)}
-                >
-                  {!spaces.length ? <option value="">スペースなし</option> : null}
-                  {spaces.map((space) => (
-                    <option key={space.id} value={space.id}>
-                      {space.kind === "private" ? "個人" : space.guildName} · {space.name}
-                    </option>
-                  ))}
-                </select>
-                <button className="space-manage-button" onClick={() => setSpaceDialogOpen(true)}>管理</button>
-              </div>
-            ) : null}
-            <button className="ghost-button" onClick={() => void (sessionUser ? logout() : loginWithDiscord())}>
-              <LogIn size={16} />
-              {sessionUser ? "Logout" : "Discord"}
-            </button>
-            <button className="ghost-button" onClick={() => void saveLayoutNow()}>
-              <Save size={16} />
-              Save
-            </button>
-            <button className="ghost-button" onClick={() => setIndexOpen(true)}>
-              <BarChart3 size={16} />
-              指数
-            </button>
-            <button className="primary-button" onClick={() => setAddOpen(true)}>
-              <Plus size={16} />
-              追加
-            </button>
+        </div>
+
+        <div className="status-group" aria-label="システム状態">
+          <LocalClock />
+          <div className={`status-pill ${workspaceConnected ? "ready" : ""}`}>
+            {workspaceConnected ? <Wifi size={14} /> : <WifiOff size={14} />}
+            {workspaceStatusLabel}
           </div>
+          <div className={`status-pill ${marketDataReady ? "ready" : ""}`}>
+            {marketDataReady ? <Wifi size={14} /> : <WifiOff size={14} />}
+            {marketDataLabel}
+          </div>
+        </div>
+
+        <div className="toolbar">
+          {sessionUser ? (
+            <div className="space-switcher">
+              <FolderKanban size={16} />
+              <select
+                aria-label="スペースを選択"
+                value={activeSpaceId ?? ""}
+                disabled={spacesLoading || !spaces.length}
+                onChange={(event) => switchSpace(event.target.value)}
+              >
+                {!spaces.length ? <option value="">スペースなし</option> : null}
+                {spaces.map((space) => (
+                  <option key={space.id} value={space.id}>
+                    {space.kind === "private" ? "個人" : space.guildName} · {space.name}
+                  </option>
+                ))}
+              </select>
+              <button className="space-manage-button" onClick={() => setSpaceDialogOpen(true)}>管理</button>
+            </div>
+          ) : null}
+          <button className="ghost-button" onClick={() => void (sessionUser ? logout() : loginWithDiscord())}>
+            <LogIn size={16} />
+            {sessionUser ? "Logout" : "Discord"}
+          </button>
+          <button className="ghost-button" onClick={() => void saveLayoutNow()}>
+            <Save size={16} />
+            Save state
+          </button>
+          <button className="ghost-button" onClick={() => setIndexOpen(true)}>
+            <BarChart3 size={16} />
+            New index
+          </button>
+          <button className="primary-button" onClick={() => setAddOpen(true)}>
+            <Plus size={16} />
+            Add instrument
+          </button>
         </div>
       </header>
 
-      <section className="control-strip">
-        <div className="filter-group">
-          <span className="section-index">02</span>
-          <nav className="tabs" aria-label="watchlist filters">
-            {tabs.map((tab) => (
-              <button
-                key={tab.key}
-                className={activeTab === tab.key ? "active" : ""}
-                onClick={() => setActiveTab(tab.key)}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </nav>
+      <section className="market-hero" aria-labelledby="market-hero-title">
+        <div className="hero-copy">
+          <div className="editorial-kicker">
+            <span>[ 01 ]</span>
+            <span>Live market board / Tokyo, JP</span>
+          </div>
+          <h1 id="market-hero-title">
+            <span>Watch</span>
+            <span className="hero-outline">List</span>
+          </h1>
+          <div className="hero-caption">
+            <p>同じ価格、同じ履歴、同じ判断基準。チームの視線をひとつの市場面へ。</p>
+            <span>US · JP · KR · FX · INDEX · COMMODITY</span>
+          </div>
         </div>
+
+        <aside className="hero-signal" aria-label="現在最も大きく動いている銘柄">
+          <div className="signal-heading">
+            <span>[ Live signal ]</span>
+            <span>{quotedVisibleCards.length}/{visibleCards.length} online</span>
+          </div>
+          <div className="signal-identity">
+            <span>{leadMover?.symbol ?? "No signal"}</span>
+            <small>{leadMover?.name ?? "Waiting for the shared market cache"}</small>
+          </div>
+          <strong className={`signal-value ${leadMoverClass}`}>{leadMoverPercent}</strong>
+          <div className="breadth-meter">
+            <div>
+              <span>Advance breadth</span>
+              <strong>{advanceShare}%</strong>
+            </div>
+            <div className="breadth-track" aria-hidden="true">
+              <span style={{ width: `${advanceShare}%` }} />
+            </div>
+          </div>
+        </aside>
+
+        <div className="hero-stats" aria-label="表示中の市場概要">
+          <div>
+            <span>Tracked / 01</span>
+            <strong>{String(visibleCards.length).padStart(2, "0")}</strong>
+            <small>{activeTabLabel} instruments</small>
+          </div>
+          <div>
+            <span>Advance / 02</span>
+            <strong>{String(advancingCount).padStart(2, "0")}</strong>
+            <small>positive today</small>
+          </div>
+          <div>
+            <span>Decline / 03</span>
+            <strong>{String(decliningCount).padStart(2, "0")}</strong>
+            <small>negative today</small>
+          </div>
+        </div>
+      </section>
+
+      <section className="desk-controls" aria-label="表示とフィルター">
+        <div className="control-heading">
+          <span className="section-index">[ 02 ]</span>
+          <span>Market scope</span>
+        </div>
+        <nav className="tabs" aria-label="watchlist filters">
+          {tabs.map((tab) => (
+            <button
+              key={tab.key}
+              className={activeTab === tab.key ? "active" : ""}
+              onClick={() => setActiveTab(tab.key)}
+            >
+              <span>{tab.label}</span>
+            </button>
+          ))}
+        </nav>
         <div className="view-actions">
           <button
             className="theme-toggle"
             type="button"
-            aria-label="ライトモード"
+            aria-label={theme === "dark" ? "ライトモード" : "ダークモード"}
             aria-pressed={theme === "light"}
             title={theme === "dark" ? "ライトモード" : "ダークモード"}
             onClick={toggleTheme}
@@ -3125,60 +3199,73 @@ export function WatchlistApp() {
         </div>
       </section>
 
-      <section className="market-grid">
-        {visibleCards.map((card) => (
-          <MarketCard
-            key={card.id}
-            card={card}
-            dragging={draggingId === card.id}
-            onRemove={(id) => {
-              if (customIndexes.some((customIndex) => customIndex.id === id)) {
-                setPendingDeleteIndexId(id);
-                return;
-              }
+      <section className="instrument-board" aria-labelledby="instrument-board-title">
+        <header className="board-heading">
+          <div>
+            <span className="section-index">[ 03 ]</span>
+            <h2 id="instrument-board-title">Instruments</h2>
+          </div>
+          <p><strong>{visibleCards.length}</strong> entries / {activeTabLabel} / drag to reorder</p>
+        </header>
 
-              const deletedCardPosition = cards.findIndex((card) => card.refId === id || card.id === id);
-              const deletedCard = cards[deletedCardPosition];
-              const deletedInstrument = availableInstruments.find((instrument) => instrument.id === id);
-              setCards((current) =>
-                current.filter((watchCard) => !(watchCard.refId === id || watchCard.id === id))
-              );
-              if (deletedCard) {
-                setUndoDeletion({
-                  message: `「${deletedInstrument?.name ?? deletedInstrument?.symbol ?? id}」を削除しました。`,
-                  card: deletedCard,
-                  cardPosition: deletedCardPosition
-                });
-              }
-            }}
-            onManageIndex={setManagedIndexId}
-            onToggleSize={(id) => setCards((current) => current.map((watchCard) =>
-              watchCard.refId === id
-                ? { ...watchCard, size: watchCard.size === "large" ? "normal" : "large" }
-                : watchCard
-            ))}
-            onRename={renameCard}
-            onDragStart={(id) => setDraggingId(id)}
-            onDragEnter={(overId) => {
-              if (!draggingId || draggingId === overId) {
-                return;
-              }
+        <div className="market-grid">
+          {visibleCards.map((card, index) => (
+            <MarketCard
+              key={card.id}
+              card={card}
+              sequence={index + 1}
+              dragging={draggingId === card.id}
+              onRemove={(id) => {
+                if (customIndexes.some((customIndex) => customIndex.id === id)) {
+                  setPendingDeleteIndexId(id);
+                  return;
+                }
 
-              setCards((current) => reorderCards(current, `card-${draggingId}`, `card-${overId}`));
-            }}
-            onDragEnd={() => setDraggingId(null)}
-          />
-        ))}
-        <button
-          type="button"
-          className="add-card-button"
-          aria-label="新たな銘柄を追加"
-          title="新たな銘柄を追加"
-          onClick={() => setAddOpen(true)}
-        >
-          <Plus size={34} strokeWidth={1.5} aria-hidden="true" />
-          <span>銘柄を追加</span>
-        </button>
+                const deletedCardPosition = cards.findIndex((card) => card.refId === id || card.id === id);
+                const deletedCard = cards[deletedCardPosition];
+                const deletedInstrument = availableInstruments.find((instrument) => instrument.id === id);
+                setCards((current) =>
+                  current.filter((watchCard) => !(watchCard.refId === id || watchCard.id === id))
+                );
+                if (deletedCard) {
+                  setUndoDeletion({
+                    message: `「${deletedInstrument?.name ?? deletedInstrument?.symbol ?? id}」を削除しました。`,
+                    card: deletedCard,
+                    cardPosition: deletedCardPosition
+                  });
+                }
+              }}
+              onManageIndex={setManagedIndexId}
+              onToggleSize={(id) => setCards((current) => current.map((watchCard) =>
+                watchCard.refId === id
+                  ? { ...watchCard, size: watchCard.size === "large" ? "normal" : "large" }
+                  : watchCard
+              ))}
+              onRename={renameCard}
+              onDragStart={(id) => setDraggingId(id)}
+              onDragEnter={(overId) => {
+                if (!draggingId || draggingId === overId) {
+                  return;
+                }
+
+                setCards((current) => reorderCards(current, `card-${draggingId}`, `card-${overId}`));
+              }}
+              onDragEnd={() => setDraggingId(null)}
+            />
+          ))}
+          <button
+            type="button"
+            className="add-card-button"
+            aria-label="新たな銘柄を追加"
+            title="新たな銘柄を追加"
+            onClick={() => setAddOpen(true)}
+          >
+            <span className="add-index">[ + ]</span>
+            <Plus size={34} strokeWidth={1.3} aria-hidden="true" />
+            <strong>Add instrument</strong>
+            <small>Search symbol / create market panel</small>
+          </button>
+        </div>
       </section>
 
       {addOpen ? (

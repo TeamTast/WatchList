@@ -43,6 +43,7 @@ import type {
 } from "@/lib/market/types";
 import type { DiscordGuild, SpaceKind, SpaceSummary, SpacesResponse } from "@/lib/spaces/types";
 import { createSupabaseBrowserClient, isSupabaseBrowserConfigured } from "@/lib/supabase/client";
+import { MarketField } from "@/components/market-field";
 
 const tabs: Array<{ key: "ALL" | MarketRegion; label: string }> = [
   { key: "ALL", label: "All" },
@@ -104,7 +105,102 @@ type UndoDeletion = {
 function applyDocumentTheme(theme: Theme) {
   document.documentElement.dataset.theme = theme;
   document.documentElement.style.colorScheme = theme;
-  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#eeede6" : "#090909");
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "light" ? "#d7d8d4" : "#0a0c0d");
+}
+
+function SystemClock() {
+  const [now, setNow] = useState<Date | null>(null);
+
+  useEffect(() => {
+    const update = () => setNow(new Date());
+    update();
+    const interval = window.setInterval(update, 1_000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  return (
+    <time dateTime={now?.toISOString()} suppressHydrationWarning>
+      {now
+        ? new Intl.DateTimeFormat("ja-JP", {
+            timeZone: "Asia/Tokyo",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false
+          }).format(now)
+        : "--:--:--"}
+    </time>
+  );
+}
+
+function useModalLifecycle(onDismiss: () => void) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const dismissRef = useRef(onDismiss);
+  dismissRef.current = onDismiss;
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+
+    if (!dialog) {
+      return;
+    }
+
+    const activeDialog = dialog;
+    document.body.style.overflow = "hidden";
+    const focusableSelector = [
+      "button:not([disabled])",
+      "input:not([disabled])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      "[href]",
+      "[tabindex]:not([tabindex='-1'])"
+    ].join(",");
+    const initialFocus = activeDialog.querySelector<HTMLElement>("[autofocus]")
+      ?? activeDialog.querySelector<HTMLElement>(focusableSelector);
+    const frame = window.requestAnimationFrame(() => initialFocus?.focus());
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        dismissRef.current();
+        return;
+      }
+
+      if (event.key !== "Tab") {
+        return;
+      }
+
+      const focusable = Array.from(activeDialog.querySelectorAll<HTMLElement>(focusableSelector))
+        .filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true");
+      const first = focusable[0];
+      const last = focusable.at(-1);
+
+      if (!first || !last) {
+        event.preventDefault();
+        return;
+      }
+
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("keydown", handleKeyDown);
+      document.body.style.overflow = previousOverflow;
+      previouslyFocused?.focus();
+    };
+  }, []);
+
+  return dialogRef;
 }
 
 function isUsRegularSession(date = new Date()) {
@@ -515,13 +611,15 @@ function EditableCardName({ name, onRename }: { name: string; onRename: (name: s
   }
 
   return (
-    <span
+    <button
+      type="button"
       className="card-name"
-      title="ダブルクリックで名前を変更"
-      onDoubleClick={() => setEditing(true)}
+      title="名前を編集"
+      aria-label={`${name}の名前を編集`}
+      onClick={() => setEditing(true)}
     >
       {name}
-    </span>
+    </button>
   );
 }
 
@@ -909,7 +1007,8 @@ function MarketCard({
   onRename,
   onDragStart,
   onDragEnter,
-  onDragEnd
+  onDragEnd,
+  onMove
 }: {
   card: MarketCardView;
   dragging: boolean;
@@ -919,6 +1018,7 @@ function MarketCard({
   onDragStart: (id: string) => void;
   onDragEnter: (id: string) => void;
   onDragEnd: () => void;
+  onMove: (id: string, direction: -1 | 1) => void;
 }) {
   const changeClass = classForChange(card.quote?.change ?? 0);
   const formattedChange = card.quote ? formatChange(card.quote) : null;
@@ -935,11 +1035,21 @@ function MarketCard({
         <button
           className="icon-button muted drag-handle"
           draggable
-          aria-label="並べ替え"
-          title="並べ替え"
+          aria-label={`${card.symbol}を並べ替え。矢印キーで前後に移動`}
+          title="ドラッグ、または矢印キーで並べ替え"
           onDragStart={(event) => {
             event.dataTransfer.effectAllowed = "move";
             onDragStart(card.id);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+              event.preventDefault();
+              onMove(card.id, -1);
+            }
+            if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+              event.preventDefault();
+              onMove(card.id, 1);
+            }
           }}
         >
           <GripVertical size={17} />
@@ -974,7 +1084,12 @@ function MarketCard({
               <SlidersHorizontal size={16} />
             </button>
           ) : null}
-          <button className="icon-button danger" title="削除" onClick={() => onRemove(card.id)}>
+          <button
+            className="icon-button danger"
+            title="削除"
+            aria-label={`${card.symbol}を削除`}
+            onClick={() => onRemove(card.id)}
+          >
             <Trash2 size={16} />
           </button>
         </div>
@@ -1039,6 +1154,7 @@ function AddInstrumentDialog({
   onClose: () => void;
   onAdd: (instrument: Instrument) => void;
 }) {
+  const dialogRef = useModalLifecycle(onClose);
   const [query, setQuery] = useState("");
   const [nameLookup, setNameLookup] = useState<{ providerSymbol: string; name: string | null } | null>(null);
   const [nameSearchResults, setNameSearchResults] = useState<Instrument[]>([]);
@@ -1129,13 +1245,13 @@ function AddInstrumentDialog({
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="modal-panel" role="dialog" aria-modal="true" aria-label="銘柄追加">
+      <section ref={dialogRef} className="modal-panel" role="dialog" aria-modal="true" aria-label="銘柄追加">
         <header className="modal-header">
           <div>
             <h2>銘柄を追加</h2>
             <p>米国株、日本株、FXをウォッチリストに入れます。</p>
           </div>
-          <button className="icon-button muted" title="閉じる" onClick={onClose}>
+          <button className="icon-button muted" title="閉じる" aria-label="銘柄追加を閉じる" onClick={onClose}>
             <X size={18} />
           </button>
         </header>
@@ -1144,6 +1260,7 @@ function AddInstrumentDialog({
           <Search size={17} />
           <input
             autoFocus
+            aria-label="銘柄名またはティッカー"
             placeholder="AAPL, キオクシア, 7203, USDJPY..."
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -1201,19 +1318,20 @@ function IndexDialog({
   onClose: () => void;
   onCreate: (customIndex: CustomIndex) => void;
 }) {
+  const dialogRef = useModalLifecycle(onClose);
   const eligible = cards.filter((card) => card.assetClass !== "custom_index");
   const [name, setName] = useState("オリジナル指数");
   const [selected, setSelected] = useState(eligible.slice(0, 4).map((card) => card.id));
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="modal-panel" role="dialog" aria-modal="true" aria-label="指数作成">
+      <section ref={dialogRef} className="modal-panel" role="dialog" aria-modal="true" aria-label="指数作成">
         <header className="modal-header">
           <div>
             <h2>指数を作成</h2>
             <p>選んだ銘柄を1000基準の等ウェイト指数にします。</p>
           </div>
-          <button className="icon-button muted" title="閉じる" onClick={onClose}>
+          <button className="icon-button muted" title="閉じる" aria-label="指数作成を閉じる" onClick={onClose}>
             <X size={18} />
           </button>
         </header>
@@ -1287,6 +1405,7 @@ function IndexManagementDialog({
   onClose: () => void;
   onUpdate: (customIndex: CustomIndex) => void;
 }) {
+  const dialogRef = useModalLifecycle(onClose);
   const totalWeight = customIndex.members.reduce((sum, member) => sum + member.weight, 0) || 1;
   const [weights, setWeights] = useState<Record<string, string>>(() =>
     Object.fromEntries(
@@ -1381,14 +1500,14 @@ function IndexManagementDialog({
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="modal-panel index-management-modal" role="dialog" aria-modal="true" aria-label="指数の構成銘柄管理">
+      <section ref={dialogRef} className="modal-panel index-management-modal" role="dialog" aria-modal="true" aria-label="指数の構成銘柄管理">
         <header className="modal-header">
           <div>
             <span className="eyebrow">Index constituents</span>
             <h2>{customIndex.name}</h2>
             <p>構成銘柄の確認、入れ替え、構成比率のリバランスができます。</p>
           </div>
-          <button className="icon-button muted" title="閉じる" onClick={onClose}>
+          <button className="icon-button muted" title="閉じる" aria-label="指数管理を閉じる" onClick={onClose}>
             <X size={18} />
           </button>
         </header>
@@ -1467,18 +1586,19 @@ function DeleteIndexDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const dialogRef = useModalLifecycle(onCancel);
   const [acknowledged, setAcknowledged] = useState(false);
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="modal-panel delete-index-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-index-title" aria-describedby="delete-index-description">
+      <section ref={dialogRef} className="modal-panel delete-index-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-index-title" aria-describedby="delete-index-description">
         <header className="modal-header">
           <div>
-            <span className="delete-warning-label"><AlertTriangle size={15} /> Irreversible action</span>
+            <span className="delete-warning-label"><AlertTriangle size={15} /> Protected action</span>
             <h2 id="delete-index-title">オリジナル指数を削除しますか？</h2>
-            <p id="delete-index-description">「{customIndex.name}」と、その構成・ウェイト設定が削除されます。この操作は元に戻せません。</p>
+            <p id="delete-index-description">「{customIndex.name}」と、その構成・ウェイト設定を削除します。削除後6秒以内なら取り消せます。</p>
           </div>
-          <button className="icon-button muted" title="キャンセル" onClick={onCancel}>
+          <button className="icon-button muted" title="キャンセル" aria-label="指数削除をキャンセル" onClick={onCancel}>
             <X size={18} />
           </button>
         </header>
@@ -1490,14 +1610,14 @@ function DeleteIndexDialog({
 
         <label className="delete-index-acknowledgement">
           <input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />
-          <span>指数の構成と設定が失われ、元に戻せないことを確認しました。</span>
+          <span>対象の指数と構成設定を削除することを確認しました。</span>
         </label>
 
         <div className="delete-index-actions">
           <button className="ghost-button" onClick={onCancel}>キャンセル</button>
           <button className="danger-button" disabled={!acknowledged} onClick={onConfirm}>
             <Trash2 size={16} />
-            完全に削除
+            指数を削除
           </button>
         </div>
       </section>
@@ -1526,6 +1646,7 @@ function SpaceDialog({
   onDelete: (space: SpaceSummary, confirmationName: string) => Promise<void>;
   onClose: () => void;
 }) {
+  const dialogRef = useModalLifecycle(onClose);
   const [name, setName] = useState("");
   const [kind, setKind] = useState<SpaceKind>("private");
   const [guildId, setGuildId] = useState(guilds[0]?.id ?? "");
@@ -1617,7 +1738,7 @@ function SpaceDialog({
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="modal-panel space-modal" role="dialog" aria-modal="true" aria-label="スペース管理">
+      <section ref={dialogRef} className="modal-panel space-modal" role="dialog" aria-modal="true" aria-label="スペース管理">
         <header className="modal-header">
           <div>
             <span className="eyebrow">Workspace routing</span>
@@ -2544,6 +2665,36 @@ export function WatchlistApp() {
           : workspaceStatus === "error"
             ? "共有同期エラー"
             : "ローカル編集";
+  const readyVisibleCards = visibleCards.filter((card) => card.quote);
+  const advancingCount = readyVisibleCards.filter((card) => (card.quote?.changePercent ?? 0) > 0).length;
+  const decliningCount = readyVisibleCards.filter((card) => (card.quote?.changePercent ?? 0) < 0).length;
+  const averageChange = readyVisibleCards.length
+    ? readyVisibleCards.reduce((total, card) => total + (card.quote?.changePercent ?? 0), 0) / readyVisibleCards.length
+    : null;
+  const topMover = readyVisibleCards.reduce<MarketCardView | null>((leader, card) => {
+    if (!leader || Math.abs(card.quote?.changePercent ?? 0) > Math.abs(leader.quote?.changePercent ?? 0)) {
+      return card;
+    }
+    return leader;
+  }, null);
+  const latestQuoteTimestamp = Math.max(
+    0,
+    ...readyVisibleCards.map((card) => Date.parse(card.quote?.timestamp ?? "")).filter(Number.isFinite)
+  );
+  const latestQuoteLabel = latestQuoteTimestamp
+    ? new Intl.DateTimeFormat("ja-JP", {
+        timeZone: "Asia/Tokyo",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+      }).format(new Date(latestQuoteTimestamp))
+    : "--:--:--";
+  const activeTabLabel = tabs.find((tab) => tab.key === activeTab)?.label ?? "All";
+  const marketFieldItems = readyVisibleCards.map((card) => ({
+    label: card.symbol,
+    change: card.quote?.changePercent ?? 0
+  }));
 
   async function loginWithDiscord() {
     if (!supabase) {
@@ -2598,6 +2749,24 @@ export function WatchlistApp() {
     setCustomIndexes((current) =>
       current.map((customIndex) => (customIndex.id === id ? { ...customIndex, name } : customIndex))
     );
+  }
+
+  function moveCard(id: string, direction: -1 | 1) {
+    const label = cardViews.find((card) => card.id === id)?.symbol ?? id;
+    setCards((current) => {
+      const from = current.findIndex((card) => card.refId === id);
+      const to = Math.max(0, Math.min(current.length - 1, from + direction));
+
+      if (from < 0 || from === to) {
+        return current;
+      }
+
+      const next = [...current];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+    setToast(`${label}を${direction < 0 ? "前" : "後ろ"}へ移動しました`);
   }
 
   function addInstrument(instrument: Instrument) {
@@ -2691,37 +2860,138 @@ export function WatchlistApp() {
 
   return (
     <main className={`app-shell ${compactView ? "compact" : ""}`}>
-      <header className="workspace-bar">
-        <div className="brand-block">
-          <div className="brand-mark" aria-hidden="true">
-            <span>W/L</span>
-            <small>01</small>
+      <a className="skip-link" href="#market-board">市場ボードへ移動</a>
+
+      <header className="command-deck">
+        <div className="system-bar">
+          <div className="wordmark" aria-label="WatchList">
+            <span className="wordmark-code">WL/01</span>
+            <strong>WATCHLIST</strong>
           </div>
-          <div className="brand-copy">
-            <span className="eyebrow">Market intelligence / Tokyo</span>
-            <h1>Watch<span>List</span></h1>
-            <p>US / Japan / FX — shared market board</p>
+          <div className="system-route" aria-label="システム情報">
+            <span>MARKET OPERATIONS</span>
+            <span>TOKYO / UTC+09</span>
+            <span>REV.02</span>
+          </div>
+          <div className="system-clock">
+            <span>LOCAL TIME</span>
+            <SystemClock />
           </div>
         </div>
 
-        <div className="workspace-panel">
-          <div className="workspace-overview">
-            <div className="workspace-chip">
-              <span className="section-index">01</span>
-              {activeSpace?.kind === "private" ? <LockKeyhole size={15} /> : <Server size={15} />}
-              <span>{activeSpace ? `${activeSpace.guildName ? `${activeSpace.guildName} / ` : ""}${activeSpace.name}` : "Local workspace"}</span>
+        <div className="briefing-grid">
+          <section className="briefing-copy" aria-labelledby="briefing-title">
+            <span className="eyebrow"><i aria-hidden="true" /> SYS/01 · LIVE MARKET ARRAY</span>
+            <h1 id="briefing-title" aria-label="Watch the market">
+              <span className="heading-line"><span>WATCH THE</span></span>
+              <span className="heading-line heading-line-offset"><span>MARKET<i>.</i></span></span>
+            </h1>
+            <p>
+              米国株、日本株、FX、自作指数をひとつの盤面で監視する。
+              価格・変動・共有レイアウトを、判断できる密度で。
+            </p>
+            <div className="briefing-actions">
+              <button className="primary-button hero-primary" onClick={() => setAddOpen(true)}>
+                <Plus size={17} />
+                銘柄を追加
+                <span aria-hidden="true">→</span>
+              </button>
+              <button className="text-action" onClick={() => setIndexOpen(true)}>
+                指数を構成する <span aria-hidden="true">↗</span>
+              </button>
             </div>
-            <div className="status-group">
-              <div className={`status-pill ${workspaceConnected ? "ready" : ""}`}>
-                {workspaceConnected ? <Wifi size={14} /> : <WifiOff size={14} />}
-                {workspaceStatusLabel}
+            <dl className="briefing-facts">
+              <div>
+                <dt>US SESSION</dt>
+                <dd className={isUsRegularSession() ? "positive" : "neutral"}>
+                  {isUsRegularSession() ? "OPEN" : "CLOSED"}
+                </dd>
               </div>
-              <div className={`status-pill ${marketDataReady ? "ready" : ""}`}>
-                {marketDataReady ? <Wifi size={14} /> : <WifiOff size={14} />}
-                {marketDataLabel}
+              <div>
+                <dt>VIEW SCOPE</dt>
+                <dd>{activeTabLabel}</dd>
               </div>
+              <div>
+                <dt>FEED SOURCE</dt>
+                <dd>{serverQuoteSource ? sourceLabels[serverQuoteSource] : "ACQUIRING"}</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section className="signal-field" aria-label="表示銘柄の値動きフィールド">
+            <header>
+              <span>VECTOR / DAILY DELTA</span>
+              <span>{readyVisibleCards.length.toString().padStart(2, "0")} / {visibleCards.length.toString().padStart(2, "0")} FEEDS</span>
+            </header>
+            <MarketField items={marketFieldItems} theme={theme} />
+            <footer>
+              <span>AMPLITUDE = CHANGE %</span>
+              <span>LOCAL POINTER RESPONSE</span>
+            </footer>
+          </section>
+
+          <aside className="briefing-data" aria-label="市場サマリー">
+            <div className="summary-block summary-breadth">
+              <span className="summary-id">B/01</span>
+              <span className="summary-label">MARKET BREADTH</span>
+              <strong>
+                <span className="positive">{advancingCount.toString().padStart(2, "0")}</span>
+                <i>/</i>
+                <span className="negative">{decliningCount.toString().padStart(2, "0")}</span>
+              </strong>
+              <small>ADVANCING / DECLINING</small>
+            </div>
+            <div className="summary-block">
+              <span className="summary-id">B/02</span>
+              <span className="summary-label">MEAN DELTA</span>
+              <strong className={classForChange(averageChange ?? 0)}>
+                {averageChange === null ? "--" : `${averageChange >= 0 ? "+" : ""}${averageChange.toFixed(2)}%`}
+              </strong>
+              <small>{readyVisibleCards.length} VALID STREAMS</small>
+            </div>
+            <div className="summary-block">
+              <span className="summary-id">B/03</span>
+              <span className="summary-label">MAX MOVEMENT</span>
+              <strong className={classForChange(topMover?.quote?.changePercent ?? 0)}>
+                {topMover?.symbol ?? "--"}
+              </strong>
+              <small>
+                {topMover?.quote
+                  ? `${topMover.quote.changePercent >= 0 ? "+" : ""}${topMover.quote.changePercent.toFixed(2)}% / 1D`
+                  : "NO DATA"}
+              </small>
+            </div>
+            <div className="summary-block">
+              <span className="summary-id">B/04</span>
+              <span className="summary-label">LAST TICK / JST</span>
+              <strong>{latestQuoteLabel}</strong>
+              <small>{marketDataReady ? "FEED NOMINAL" : "FEED ACQUIRING"}</small>
+            </div>
+          </aside>
+        </div>
+
+        <div className="workspace-rack">
+          <div className="workspace-chip">
+            <span className="section-index">WS/01</span>
+            {activeSpace?.kind === "private" ? <LockKeyhole size={15} /> : <Server size={15} />}
+            <span>
+              {activeSpace
+                ? `${activeSpace.guildName ? `${activeSpace.guildName} / ` : ""}${activeSpace.name}`
+                : "Local workspace"}
+            </span>
+          </div>
+
+          <div className="status-group" aria-label="接続状態">
+            <div className={`status-pill status-${workspaceStatus} ${workspaceConnected ? "ready" : ""}`}>
+              {workspaceConnected ? <Wifi size={14} /> : <WifiOff size={14} />}
+              {workspaceStatusLabel}
+            </div>
+            <div className={`status-pill ${marketDataReady ? "ready" : snapshotError ? "error" : ""}`}>
+              {marketDataReady ? <Wifi size={14} /> : <WifiOff size={14} />}
+              {marketDataLabel}
             </div>
           </div>
+
           <div className="toolbar">
             {sessionUser ? (
               <div className="space-switcher">
@@ -2748,28 +3018,21 @@ export function WatchlistApp() {
             </button>
             <button className="ghost-button" onClick={() => void saveLayoutNow()}>
               <Save size={16} />
-              Save
-            </button>
-            <button className="ghost-button" onClick={() => setIndexOpen(true)}>
-              <BarChart3 size={16} />
-              指数
-            </button>
-            <button className="primary-button" onClick={() => setAddOpen(true)}>
-              <Plus size={16} />
-              追加
+              Save state
             </button>
           </div>
         </div>
       </header>
 
-      <section className="control-strip">
+      <section className="control-strip" aria-label="市場フィルターと表示設定">
         <div className="filter-group">
-          <span className="section-index">02</span>
-          <nav className="tabs" aria-label="watchlist filters">
+          <span className="section-index">SCOPE/02</span>
+          <nav className="tabs" aria-label="市場フィルター">
             {tabs.map((tab) => (
               <button
                 key={tab.key}
                 className={activeTab === tab.key ? "active" : ""}
+                aria-pressed={activeTab === tab.key}
                 onClick={() => setActiveTab(tab.key)}
               >
                 {tab.label}
@@ -2781,7 +3044,7 @@ export function WatchlistApp() {
           <button
             className="theme-toggle"
             type="button"
-            aria-label="ライトモード"
+            aria-label={theme === "dark" ? "ライトモードに切り替え" : "ダークモードに切り替え"}
             aria-pressed={theme === "light"}
             title={theme === "dark" ? "ライトモード" : "ダークモード"}
             onClick={toggleTheme}
@@ -2800,6 +3063,7 @@ export function WatchlistApp() {
           <button
             className={`icon-button muted ${compactView ? "active" : ""}`}
             aria-label={compactView ? "標準表示" : "縮小表示"}
+            aria-pressed={compactView}
             title={compactView ? "標準表示" : "縮小表示"}
             onClick={() => setCompactView((current) => !current)}
           >
@@ -2816,11 +3080,28 @@ export function WatchlistApp() {
           >
             <RefreshCw size={16} />
           </button>
+          <button className="primary-button control-primary" onClick={() => setAddOpen(true)}>
+            <Plus size={16} />
+            <span>追加</span>
+          </button>
         </div>
       </section>
 
-      <section className="market-grid">
-        {visibleCards.map((card) => (
+      <section className="board-section" id="market-board" tabIndex={-1}>
+        <header className="board-heading">
+          <div>
+            <span className="eyebrow">GRID/02 · INSTRUMENT MONITOR</span>
+            <h2>{activeTabLabel} / LIVE BOARD</h2>
+          </div>
+          <div className="board-readout" aria-label="表示状況">
+            <span><strong>{visibleCards.length.toString().padStart(2, "0")}</strong> RECORDS</span>
+            <span><strong>{readyVisibleCards.length.toString().padStart(2, "0")}</strong> ONLINE</span>
+            <span><strong>{latestQuoteLabel}</strong> JST</span>
+          </div>
+        </header>
+
+        <div className="market-grid">
+          {visibleCards.map((card) => (
           <MarketCard
             key={card.id}
             card={card}
@@ -2856,8 +3137,24 @@ export function WatchlistApp() {
               setCards((current) => reorderCards(current, `card-${draggingId}`, `card-${overId}`));
             }}
             onDragEnd={() => setDraggingId(null)}
+            onMove={moveCard}
           />
-        ))}
+          ))}
+          {!visibleCards.length ? (
+            <div className="empty-board">
+              <span className="section-index">NO/RECORDS</span>
+              <strong>{activeTab === "ALL" ? "監視対象がありません" : `${activeTabLabel}の監視対象がありません`}</strong>
+              <p>表示範囲を戻すか、新しい銘柄を市場ボードへ追加してください。</p>
+              <button
+                className="primary-button"
+                onClick={() => activeTab === "ALL" ? setAddOpen(true) : setActiveTab("ALL")}
+              >
+                {activeTab === "ALL" ? <Plus size={16} /> : null}
+                {activeTab === "ALL" ? "銘柄を追加" : "すべて表示"}
+              </button>
+            </div>
+          ) : null}
+        </div>
       </section>
 
       {addOpen ? (

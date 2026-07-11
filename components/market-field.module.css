@@ -1,0 +1,156 @@
+.root {
+  --field-surface: #101416;
+  --field-line: #364045;
+  --field-line-strong: #556166;
+  --field-text: #b7bfbc;
+  --field-muted: #77817d;
+  --field-signal: #72d9bd;
+
+  position: relative;
+  isolation: isolate;
+  inline-size: clamp(15rem, 26vw, 25rem);
+  min-inline-size: 14rem;
+  block-size: clamp(5.25rem, 7.5vw, 6.75rem);
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--field-line);
+  border-radius: 2px;
+  background: var(--field-surface);
+  color: var(--field-text);
+  contain: layout paint style;
+  transition: border-color 160ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.root[data-theme="light"] {
+  --field-surface: #e4e5e0;
+  --field-line: #aeb4ae;
+  --field-line-strong: #747d79;
+  --field-text: #4d5653;
+  --field-muted: #555e5a;
+  --field-signal: #156f5b;
+}
+
+.root::before,
+.root::after {
+  position: absolute;
+  z-index: 2;
+  inline-size: 14px;
+  block-size: 5px;
+  pointer-events: none;
+  content: "";
+}
+
+.root::before {
+  inset: -1px -1px auto auto;
+  border-block-start: 1px solid var(--field-line-strong);
+  border-inline-end: 1px solid var(--field-line-strong);
+}
+
+.root::after {
+  inset: auto auto -1px -1px;
+  border-block-end: 1px solid var(--field-line-strong);
+  border-inline-start: 1px solid var(--field-line-strong);
+}
+
+.root:hover {
+  border-color: var(--field-line-strong);
+}
+
+.canvas {
+  display: block;
+  inline-size: 100%;
+  block-size: 100%;
+  touch-action: pan-y;
+}
+
+.meta,
+.breadth {
+  position: absolute;
+  z-index: 1;
+  inset-inline: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  pointer-events: none;
+  font-family: var(
+    --font-mono,
+    "IBM Plex Mono",
+    "Roboto Mono",
+    "SFMono-Regular",
+    Consolas,
+    monospace
+  );
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.meta {
+  inset-block-start: 8px;
+  color: var(--field-text);
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+}
+
+.identifier {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.statusMark {
+  inline-size: 4px;
+  block-size: 4px;
+  background: var(--field-signal);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--field-signal), transparent 68%);
+}
+
+.average {
+  color: var(--field-muted);
+  letter-spacing: 0.02em;
+}
+
+.breadth {
+  inset-block-end: 6px;
+  color: var(--field-muted);
+  font-size: 0.5625rem;
+  letter-spacing: 0.045em;
+}
+
+.srOnly {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  border: 0;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .root {
+    inline-size: 100%;
+    min-inline-size: 0;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .root {
+    border-color: var(--field-line-strong);
+  }
+
+  .average,
+  .breadth {
+    color: var(--field-text);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .root {
+    transition: none;
+  }
+}

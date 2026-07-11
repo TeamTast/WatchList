@@ -5,9 +5,26 @@
 ## Setup
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
+
+## Development
+
+Node.js 22.16以降とnpm 10以降を使用します。lockfileどおりに環境を作るときは `npm ci` を使ってください。Windows PowerShellでは実行ポリシーによる `npm.ps1` の失敗を避けるため、エージェントと手動検証のどちらも `npm.cmd` を使います。
+
+```powershell
+npm.cmd ci
+npm.cmd run dev
+npm.cmd run check
+npm.cmd run verify
+```
+
+- `check`: Node標準テストランナーの単体テストとTypeScript型検査
+- `verify`: `check` に加えてNext.js本番ビルド
+- 依存追加・更新は明示的な作業として行い、通常の実装では `package.json` と `package-lock.json` を変更しません。
+
+Codexはリポジトリをtrustedとして開くと [`.codex/config.toml`](./.codex/config.toml) を読み込み、[`AGENTS.md`](./AGENTS.md) の短いプロジェクト指示に従います。既定はGPT-5.6のmedium reasoning、Standard相当の実行、最大3エージェントです。小さな変更は単一エージェントで処理し、独立した調査や検証だけを並列化します。
 
 Copy `.env.example` to `.env.local` and fill Supabase values when enabling auth.
 

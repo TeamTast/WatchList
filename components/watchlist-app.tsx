@@ -90,6 +90,13 @@ const activeSpaceStorageKey = "watchlist.active-space.v1";
 const themeStorageKey = "watchlist.theme.v1";
 const snapshotPollIntervalMs = 60_000;
 
+const localClockFormatter = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23"
+});
+
 function spaceLayoutStorageKey(spaceId: string | null) {
   return spaceId ? `${layoutStorageKey}.${spaceId}` : layoutStorageKey;
 }
@@ -176,6 +183,26 @@ function formatFetchedAt(value: string) {
   }).format(new Date(value));
 }
 
+function LocalClock() {
+  const [localTime, setLocalTime] = useState<Date | null>(null);
+
+  useEffect(() => {
+    const updateLocalTime = () => setLocalTime(new Date());
+    updateLocalTime();
+
+    const intervalId = window.setInterval(updateLocalTime, 1_000);
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  return (
+    <time className="local-clock" dateTime={localTime?.toISOString()}>
+      <Clock3 size={14} aria-hidden="true" />
+      <span>Local</span>
+      <strong>{localTime ? localClockFormatter.format(localTime) : "--:--:--"}</strong>
+    </time>
+  );
+}
+
 interface InstrumentLookupResponse {
   name: string | null;
 }
@@ -204,6 +231,10 @@ function formatPrice(value: number, currency: MarketCardView["currency"]) {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function providerSymbolKey(providerSymbol: string) {
+  return providerSymbol.trim().toUpperCase();
 }
 
 function isMarketRegion(value: unknown): value is MarketRegion {
@@ -285,7 +316,7 @@ function parseSavedLayout(layout: unknown): SavedLayout | null {
     ? layout.customIndexes.filter(isCustomIndex)
     : defaultIndexes;
 
-  if (!cards.length) {
+  if (Array.isArray(layout.cards) && cards.length !== layout.cards.length) {
     return null;
   }
 
@@ -301,13 +332,13 @@ function parseSavedLayout(layout: unknown): SavedLayout | null {
 }
 
 function readSavedLayout(storage: Storage, storageKey = layoutStorageKey): SavedLayout | null {
-  const rawLayout = storage.getItem(storageKey);
-
-  if (!rawLayout) {
-    return null;
-  }
-
   try {
+    const rawLayout = storage.getItem(storageKey);
+
+    if (!rawLayout) {
+      return null;
+    }
+
     return parseSavedLayout(JSON.parse(rawLayout) as unknown);
   } catch {
     return null;
@@ -374,11 +405,73 @@ function appendSeriesPoint(series: SeriesPoint[], point: SeriesPoint) {
     return [point];
   }
 
+  if (lastPoint && point.time < lastPoint.time) {
+    return series;
+  }
+
   if (lastPoint && point.time - lastPoint.time < 1_500) {
     return [...series.slice(0, -1), point];
   }
 
   return [...series.slice(1), point];
+}
+
+function quoteTimestamp(quote: Quote) {
+  const timestamp = Date.parse(quote.timestamp);
+  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+}
+
+function preferFresherQuote(current: Quote | undefined, incoming: Quote) {
+  if (!current) {
+    return incoming;
+  }
+
+  const currentTimestamp = quoteTimestamp(current);
+  const incomingTimestamp = quoteTimestamp(incoming);
+
+  if (incomingTimestamp < currentTimestamp) {
+    return current;
+  }
+
+  if (incomingTimestamp === currentTimestamp && current.realtime && !incoming.realtime) {
+    return current;
+  }
+
+  return incoming;
+}
+
+function mergeQuoteUpdates(current: Record<string, Quote>, updates: Record<string, Quote>) {
+  const next = { ...current };
+
+  Object.entries(updates).forEach(([instrumentId, quote]) => {
+    next[instrumentId] = preferFresherQuote(current[instrumentId], quote);
+  });
+
+  return next;
+}
+
+function mergeHistorySeries(current: SeriesPoint[], incoming: SeriesPoint[]) {
+  if (!current.length) {
+    return incoming;
+  }
+
+  if (!incoming.length) {
+    return current;
+  }
+
+  const latestIncomingTime = incoming.reduce(
+    (latest, point) => Math.max(latest, point.time),
+    Number.NEGATIVE_INFINITY
+  );
+  const pointsByTime = new Map(incoming.map((point) => [point.time, point]));
+
+  current.forEach((point) => {
+    if (point.time >= latestIncomingTime) {
+      pointsByTime.set(point.time, point);
+    }
+  });
+
+  return Array.from(pointsByTime.values()).sort((a, b) => a.time - b.time);
 }
 
 function buildSeriesFromQuote(quote: Quote): SeriesPoint[] {
@@ -1235,19 +1328,28 @@ function AddInstrumentDialog({
 
   const resolvedName = nameLookup?.providerSymbol === customInstrument?.providerSymbol ? nameLookup?.name ?? null : null;
   const instrumentToAdd = customInstrument && resolvedName ? { ...customInstrument, name: resolvedName } : customInstrument;
+  const existingProviderSymbols = new Set(
+    availableInstruments
+      .filter((instrument) => existingInstrumentIds.includes(instrument.id))
+      .map((instrument) => providerSymbolKey(instrument.providerSymbol))
+  );
   const canAddCustom =
     instrumentToAdd &&
     !existingInstrumentIds.includes(instrumentToAdd.id) &&
-    !availableInstruments.some((instrument) => instrument.providerSymbol === instrumentToAdd.providerSymbol);
+    !existingProviderSymbols.has(providerSymbolKey(instrumentToAdd.providerSymbol)) &&
+    !availableInstruments.some(
+      (instrument) => providerSymbolKey(instrument.providerSymbol) === providerSymbolKey(instrumentToAdd.providerSymbol)
+    );
   const candidates = Array.from(
     new Map(
-      [...availableInstruments, ...nameSearchResults]
+      [...nameSearchResults, ...availableInstruments]
         .filter((instrument) => !existingInstrumentIds.includes(instrument.id))
+        .filter((instrument) => !existingProviderSymbols.has(providerSymbolKey(instrument.providerSymbol)))
         .filter((instrument) => {
           const haystack = `${instrument.symbol} ${instrument.name} ${instrument.providerSymbol}`.toLowerCase();
           return haystack.includes(query.toLowerCase()) || nameSearchResults.includes(instrument);
         })
-        .map((instrument) => [instrument.providerSymbol, instrument])
+        .map((instrument) => [providerSymbolKey(instrument.providerSymbol), instrument])
     ).values()
   );
 
@@ -1917,7 +2019,6 @@ export function WatchlistApp() {
   const [pendingDeleteIndexId, setPendingDeleteIndexId] = useState<string | null>(null);
   const [compactView, setCompactView] = useState(false);
   const [theme, setTheme] = useState<Theme>("dark");
-  const [localTime, setLocalTime] = useState<Date | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [quoteOverrides, setQuoteOverrides] = useState<Record<string, Quote>>({});
   const [fetchedAtByInstrument, setFetchedAtByInstrument] = useState<Record<string, string>>({});
@@ -1941,6 +2042,53 @@ export function WatchlistApp() {
   const supabase = useMemo(() => createSupabaseBrowserClient(), []);
   const supabaseReady = isSupabaseBrowserConfigured();
   const activeSpace = spaces.find((space) => space.id === activeSpaceId) ?? null;
+  const subscribedInstrumentIds = useMemo(() => {
+    const indexesById = new Map(customIndexes.map((customIndex) => [customIndex.id, customIndex]));
+    const instrumentIds = new Set<string>();
+
+    cards.forEach((card) => {
+      if (card.type === "instrument") {
+        instrumentIds.add(card.refId);
+        return;
+      }
+
+      indexesById.get(card.refId)?.members.forEach((member) => {
+        instrumentIds.add(member.instrumentId);
+      });
+    });
+
+    return Array.from(instrumentIds).sort();
+  }, [cards, customIndexes]);
+  const subscribedInstruments = useMemo(() => {
+    const instrumentsById = new Map(availableInstruments.map((instrument) => [instrument.id, instrument]));
+    const instrumentsByProviderSymbol = new Map<string, Instrument>();
+
+    subscribedInstrumentIds.forEach((instrumentId) => {
+      const instrument = instrumentsById.get(instrumentId);
+
+      if (instrument) {
+        const providerKey = providerSymbolKey(instrument.providerSymbol);
+        if (!instrumentsByProviderSymbol.has(providerKey)) {
+          instrumentsByProviderSymbol.set(providerKey, instrument);
+        }
+      }
+    });
+
+    return Array.from(instrumentsByProviderSymbol.values()).sort((a, b) =>
+      providerSymbolKey(a.providerSymbol).localeCompare(providerSymbolKey(b.providerSymbol))
+    );
+  }, [availableInstruments, subscribedInstrumentIds]);
+  const subscribedInstrumentKey = JSON.stringify(
+    subscribedInstruments.map((instrument) => [
+      instrument.id,
+      providerSymbolKey(instrument.providerSymbol),
+      instrument.assetClass
+    ])
+  );
+  const snapshotInstruments = subscribedInstruments.filter((instrument) => instrument.assetClass === "us_equity");
+  const snapshotInstrumentKey = JSON.stringify(
+    snapshotInstruments.map((instrument) => [instrument.id, providerSymbolKey(instrument.providerSymbol)])
+  );
 
   currentLayoutRef.current = createSavedLayout({
     instruments: availableInstruments,
@@ -2105,14 +2253,6 @@ export function WatchlistApp() {
     const initialTheme = document.documentElement.dataset.theme === "light" ? "light" : "dark";
     setTheme(initialTheme);
     applyDocumentTheme(initialTheme);
-  }, []);
-
-  useEffect(() => {
-    const updateLocalTime = () => setLocalTime(new Date());
-    updateLocalTime();
-
-    const intervalId = window.setInterval(updateLocalTime, 1_000);
-    return () => window.clearInterval(intervalId);
   }, []);
 
   useEffect(() => {
@@ -2325,30 +2465,18 @@ export function WatchlistApp() {
   }, [activeSpaceId, activeTab, availableInstruments, cards, compactView, customIndexes, sessionUser, supabase]);
 
   useEffect(() => {
+    if (!subscribedInstruments.length) {
+      return;
+    }
+
     let cancelled = false;
+    const controller = new AbortController();
 
     async function loadHistory() {
-      const subscribedInstrumentIds = new Set(
-        cards.flatMap((card) => {
-          if (card.type === "instrument") {
-            return [card.refId];
-          }
-
-          return customIndexes.find((customIndex) => customIndex.id === card.refId)?.members.map((member) => member.instrumentId) ?? [];
-        })
-      );
-      const subscribedInstruments = Array.from(subscribedInstrumentIds)
-        .map((instrumentId) => availableInstruments.find((instrument) => instrument.id === instrumentId))
-        .filter((instrument): instrument is Instrument => Boolean(instrument));
-
-      if (!subscribedInstruments.length) {
-        return;
-      }
-
       const providerSymbols = subscribedInstruments.map((instrument) => instrument.providerSymbol);
       const response = await fetch(
         `/api/market/history?symbols=${encodeURIComponent(providerSymbols.join(","))}`,
-        { cache: "no-store" }
+        { cache: "no-store", signal: controller.signal }
       );
 
       if (!response.ok) {
@@ -2357,7 +2485,7 @@ export function WatchlistApp() {
 
       const payload = (await response.json()) as HistoryResponse;
       const instrumentByProviderSymbol = new Map(
-        subscribedInstruments.map((instrument) => [instrument.providerSymbol, instrument])
+        subscribedInstruments.map((instrument) => [providerSymbolKey(instrument.providerSymbol), instrument])
       );
       const seriesUpdates: Record<string, SeriesPoint[]> = {};
       const quoteUpdates: Record<string, Quote> = {};
@@ -2365,7 +2493,7 @@ export function WatchlistApp() {
       let source: Quote["source"] | null = null;
 
       payload.histories.forEach((history) => {
-        const instrument = instrumentByProviderSymbol.get(history.instrumentId);
+        const instrument = instrumentByProviderSymbol.get(providerSymbolKey(history.instrumentId));
 
         if (!instrument) {
           return;
@@ -2384,18 +2512,20 @@ export function WatchlistApp() {
         errorUpdates[instrument.id] = history.error ?? "価格データを取得できませんでした。";
       });
 
-      if (cancelled) {
+      if (cancelled || controller.signal.aborted) {
         return;
       }
 
-      setSeriesByInstrument((current) => ({
-        ...current,
-        ...seriesUpdates
-      }));
-      setQuoteOverrides((current) => ({
-        ...current,
-        ...quoteUpdates
-      }));
+      setSeriesByInstrument((current) => {
+        const next = { ...current };
+
+        Object.entries(seriesUpdates).forEach(([instrumentId, series]) => {
+          next[instrumentId] = mergeHistorySeries(current[instrumentId] ?? [], series);
+        });
+
+        return next;
+      });
+      setQuoteOverrides((current) => mergeQuoteUpdates(current, quoteUpdates));
       if (payload.fetchedAt) {
         setFetchedAtByInstrument((current) => ({
           ...current,
@@ -2416,20 +2546,21 @@ export function WatchlistApp() {
       });
 
       if (source) {
-        setServerQuoteSource(source);
+        setServerQuoteSource((current) => current ?? source);
         setSnapshotError(false);
       }
     }
 
     void loadHistory().catch(() => {
-      if (!cancelled) {
+      if (!cancelled && !controller.signal.aborted) {
         setSnapshotError(true);
         setHistoryErrors((current) => ({
           ...current,
           ...Object.fromEntries(
-            cards
-              .filter((card) => card.type === "instrument")
-              .map((card) => [card.refId, "価格履歴を取得できませんでした。"])
+            subscribedInstruments.map((instrument) => [
+              instrument.id,
+              "価格履歴を取得できませんでした。"
+            ])
           )
         }));
       }
@@ -2437,37 +2568,24 @@ export function WatchlistApp() {
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [availableInstruments, cards, customIndexes, marketRefreshNonce]);
+  }, [marketRefreshNonce, subscribedInstrumentKey]);
 
   useEffect(() => {
+    if (!snapshotInstruments.length) {
+      return;
+    }
+
     let cancelled = false;
+    let requestInFlight = false;
+    const controller = new AbortController();
 
     async function loadSnapshots() {
-      const subscribedInstrumentIds = new Set(
-        cards.flatMap((card) => {
-          if (card.type === "instrument") {
-            return [card.refId];
-          }
-
-          return customIndexes.find((customIndex) => customIndex.id === card.refId)?.members.map((member) => member.instrumentId) ?? [];
-        })
-      );
-      const subscribedInstruments = Array.from(subscribedInstrumentIds)
-        .map((instrumentId) => availableInstruments.find((instrument) => instrument.id === instrumentId))
-        .filter(
-          (instrument): instrument is Instrument =>
-            Boolean(instrument) && instrument?.assetClass === "us_equity"
-        );
-
-      if (!subscribedInstruments.length) {
-        return;
-      }
-
-      const providerSymbols = subscribedInstruments.map((instrument) => instrument.providerSymbol);
+      const providerSymbols = snapshotInstruments.map((instrument) => instrument.providerSymbol);
       const response = await fetch(
         `/api/market/snapshot?symbols=${encodeURIComponent(providerSymbols.join(","))}`,
-        { cache: "no-store" }
+        { cache: "no-store", signal: controller.signal }
       );
 
       if (!response.ok) {
@@ -2476,11 +2594,11 @@ export function WatchlistApp() {
 
       const payload = (await response.json()) as SnapshotResponse;
       const instrumentByProviderSymbol = new Map(
-        subscribedInstruments.map((instrument) => [instrument.providerSymbol, instrument])
+        snapshotInstruments.map((instrument) => [providerSymbolKey(instrument.providerSymbol), instrument])
       );
       const updates = payload.quotes
         .map((quote) => {
-          const instrument = instrumentByProviderSymbol.get(quote.instrumentId);
+          const instrument = instrumentByProviderSymbol.get(providerSymbolKey(quote.instrumentId));
 
           if (!instrument || quote.source === "mock" || !Number.isFinite(quote.price) || quote.price <= 0) {
             return null;
@@ -2509,7 +2627,7 @@ export function WatchlistApp() {
           } => update !== null
         );
 
-      if (cancelled) {
+      if (cancelled || controller.signal.aborted) {
         return;
       }
 
@@ -2519,10 +2637,10 @@ export function WatchlistApp() {
 
       setSnapshotError(false);
       setServerQuoteSource(updates[0].quote.source);
-      setQuoteOverrides((current) => ({
-        ...current,
-        ...Object.fromEntries(updates.map((update) => [update.instrument.id, update.quote]))
-      }));
+      setQuoteOverrides((current) => mergeQuoteUpdates(
+        current,
+        Object.fromEntries(updates.map((update) => [update.instrument.id, update.quote]))
+      ));
       if (payload.fetchedAt) {
         setFetchedAtByInstrument((current) => ({
           ...current,
@@ -2547,31 +2665,48 @@ export function WatchlistApp() {
       });
     }
 
-    if (isUsRegularSession()) {
-      void loadSnapshots().catch(() => {
-        if (!cancelled) {
-          setSnapshotError(true);
-        }
-      });
-    }
-
-    const interval = window.setInterval(() => {
-      if (!isUsRegularSession()) {
+    async function pollSnapshots() {
+      if (
+        cancelled ||
+        controller.signal.aborted ||
+        requestInFlight ||
+        document.hidden ||
+        !isUsRegularSession()
+      ) {
         return;
       }
 
-      void loadSnapshots().catch(() => {
-        if (!cancelled) {
+      requestInFlight = true;
+      try {
+        await loadSnapshots();
+      } catch {
+        if (!cancelled && !controller.signal.aborted) {
           setSnapshotError(true);
         }
-      });
+      } finally {
+        requestInFlight = false;
+      }
+    }
+
+    void pollSnapshots();
+
+    const interval = window.setInterval(() => {
+      void pollSnapshots();
     }, snapshotPollIntervalMs);
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        void pollSnapshots();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       cancelled = true;
+      controller.abort();
       window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [availableInstruments, cards, customIndexes, marketRefreshNonce]);
+  }, [marketRefreshNonce, snapshotInstrumentKey]);
 
   useEffect(() => {
     if (!toast) {
@@ -2756,24 +2891,39 @@ export function WatchlistApp() {
   }
 
   function addInstrument(instrument: Instrument) {
+    const canonicalInstrument = availableInstruments.find(
+      (item) => providerSymbolKey(item.providerSymbol) === providerSymbolKey(instrument.providerSymbol)
+    ) ?? instrument;
+
     setAvailableInstruments((current) =>
-      current.some((item) => item.id === instrument.id || item.providerSymbol === instrument.providerSymbol)
+      current.some(
+        (item) =>
+          item.id === canonicalInstrument.id ||
+          providerSymbolKey(item.providerSymbol) === providerSymbolKey(canonicalInstrument.providerSymbol)
+      )
         ? current
-        : [...current, instrument]
+        : [...current, canonicalInstrument]
     );
     setHistoryErrors((current) => {
       const next = { ...current };
-      delete next[instrument.id];
+      delete next[canonicalInstrument.id];
       return next;
     });
     setCards((current) =>
-      current.some((card) => card.refId === instrument.id)
+      current.some((card) => card.refId === canonicalInstrument.id)
         ? current
-        : [...current, { id: `card-${instrument.id}`, type: "instrument", refId: instrument.id }]
+        : [
+            ...current,
+            {
+              id: `card-${canonicalInstrument.id}`,
+              type: "instrument",
+              refId: canonicalInstrument.id
+            }
+          ]
     );
 
-    if (instrument.assetClass === "jp_equity" && instrument.name === instrument.symbol) {
-      void fetch(`/api/market/instrument?providerSymbol=${encodeURIComponent(instrument.providerSymbol)}`)
+    if (canonicalInstrument.assetClass === "jp_equity" && canonicalInstrument.name === canonicalInstrument.symbol) {
+      void fetch(`/api/market/instrument?providerSymbol=${encodeURIComponent(canonicalInstrument.providerSymbol)}`)
         .then(async (response) => (response.ok ? ((await response.json()) as InstrumentLookupResponse) : null))
         .then((result) => {
           if (!result?.name) {
@@ -2781,7 +2931,7 @@ export function WatchlistApp() {
           }
 
           setAvailableInstruments((current) =>
-            current.map((item) => (item.id === instrument.id ? { ...item, name: result.name! } : item))
+            current.map((item) => (item.id === canonicalInstrument.id ? { ...item, name: result.name! } : item))
           );
         })
         .catch(() => {
@@ -2867,20 +3017,7 @@ export function WatchlistApp() {
               <span>{activeSpace ? `${activeSpace.guildName ? `${activeSpace.guildName} / ` : ""}${activeSpace.name}` : "Local workspace"}</span>
             </div>
             <div className="status-group">
-              <time className="local-clock" dateTime={localTime?.toISOString()}>
-                <Clock3 size={14} aria-hidden="true" />
-                <span>Local</span>
-                <strong>
-                  {localTime
-                    ? new Intl.DateTimeFormat("en-GB", {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                        second: "2-digit",
-                        hourCycle: "h23"
-                      }).format(localTime)
-                    : "--:--:--"}
-                </strong>
-              </time>
+              <LocalClock />
               <div className={`status-pill ${workspaceConnected ? "ready" : ""}`}>
                 {workspaceConnected ? <Wifi size={14} /> : <WifiOff size={14} />}
                 {workspaceStatusLabel}

@@ -43,7 +43,7 @@ export const instruments: Instrument[] = [
     providerSymbol: "7203.TSE",
     name: "Toyota",
     assetClass: "jp_equity",
-    market: "INDEX",
+    market: "JP",
     currency: "JPY"
   },
   {

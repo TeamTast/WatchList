@@ -1,12 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { resolveRootRelativeRedirect } from "@/lib/http/safe-redirect";
 import { createSupabaseServerClient, isSupabaseServerConfigured } from "@/lib/supabase/server";
 
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url);
   const code = requestUrl.searchParams.get("code");
   const providerError = requestUrl.searchParams.get("error_description") ?? requestUrl.searchParams.get("error");
-  const requestedNext = requestUrl.searchParams.get("next") ?? "/";
-  const next = requestedNext.startsWith("/") && !requestedNext.startsWith("//") ? requestedNext : "/";
+  const next = resolveRootRelativeRedirect(requestUrl, requestUrl.searchParams.get("next"));
 
   if (providerError) {
     return redirectWithError(request, providerError);
@@ -24,7 +24,7 @@ export async function GET(request: NextRequest) {
       return redirectWithError(request, error.message);
     }
 
-    return NextResponse.redirect(new URL(next, request.url));
+    return NextResponse.redirect(next);
   }
 
   return redirectWithError(request, "Discord did not return an authorization code.");

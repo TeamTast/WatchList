@@ -1,20 +1,20 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getMarketHistory } from "@/lib/market/providers";
 import { withSharedMarketCache } from "@/lib/market/server-cache";
+import { parseMarketSymbolQuery } from "@/lib/market/symbol-query";
 
 const HISTORY_TTL_MS = 15 * 60_000;
 
 export async function GET(request: NextRequest) {
-  const symbols = request.nextUrl.searchParams
-    .get("symbols")
-    ?.split(",")
-    .map((symbol) => symbol.trim())
-    .filter(Boolean)
-    .filter((symbol, index, all) => all.indexOf(symbol) === index)
-    .sort()
-    .slice(0, 50);
+  const parsedSymbols = parseMarketSymbolQuery(request.nextUrl.searchParams.get("symbols"));
 
-  if (!symbols?.length) {
+  if (!parsedSymbols.ok) {
+    return NextResponse.json({ error: parsedSymbols.error }, { status: 400 });
+  }
+
+  const { symbols } = parsedSymbols;
+
+  if (!symbols.length) {
     return NextResponse.json({ histories: [], fetchedAt: null });
   }
 

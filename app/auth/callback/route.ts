@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { resolveRootRelativeRedirect } from "@/lib/http/safe-redirect";
+import { persistDiscordOAuthSession } from "@/lib/discord/oauth-session";
 import { createSupabaseServerClient, isSupabaseServerConfigured } from "@/lib/supabase/server";
 
 export async function GET(request: NextRequest) {
@@ -18,13 +19,19 @@ export async function GET(request: NextRequest) {
 
   if (code) {
     const supabase = await createSupabaseServerClient();
-    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
 
     if (error) {
       return redirectWithError(request, error.message);
     }
 
-    return NextResponse.redirect(next);
+    const response = NextResponse.redirect(next);
+    response.headers.set("Cache-Control", "private, no-store");
+    persistDiscordOAuthSession(response.cookies, {
+      accessToken: data.session?.provider_token ?? undefined,
+      refreshToken: data.session?.provider_refresh_token ?? undefined
+    });
+    return response;
   }
 
   return redirectWithError(request, "Discord did not return an authorization code.");

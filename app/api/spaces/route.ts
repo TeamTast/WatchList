@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { fetchDiscordGuilds } from "@/lib/discord/guilds";
+import { fetchDiscordGuildsForSession } from "@/lib/discord/oauth-session";
 import type { SpaceKind, SpaceSummary } from "@/lib/spaces/types";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -89,23 +89,16 @@ export async function POST(request: NextRequest) {
 
 async function getSpaceRequestContext() {
   const supabase = await createSupabaseServerClient();
-  const [{ data: userData, error: userError }, { data: sessionData }] = await Promise.all([
-    supabase.auth.getUser(),
-    supabase.auth.getSession()
-  ]);
+  const { data: sessionData } = await supabase.auth.getSession();
+  const { data: userData, error: userError } = await supabase.auth.getUser();
 
-  if (userError || !userData.user) {
+  if (userError || !userData.user || !sessionData.session) {
     throw new SpaceApiError("Discordログインが必要です。", 401);
-  }
-
-  const providerToken = sessionData.session?.provider_token;
-  if (!providerToken) {
-    throw new SpaceApiError("Discordの認証情報を更新するため、再ログインしてください。", 401);
   }
 
   return {
     userId: userData.user.id,
-    guilds: await fetchDiscordGuilds(providerToken),
+    guilds: await fetchDiscordGuildsForSession(sessionData.session),
     admin: createSupabaseAdminClient()
   };
 }

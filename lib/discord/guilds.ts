@@ -7,6 +7,16 @@ type DiscordGuildResponse = {
   owner?: unknown;
 };
 
+export class DiscordApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number
+  ) {
+    super(message);
+    this.name = "DiscordApiError";
+  }
+}
+
 export async function fetchDiscordGuilds(providerToken: string): Promise<DiscordGuild[]> {
   const response = await fetch("https://discord.com/api/v10/users/@me/guilds?limit=200", {
     headers: { Authorization: `Bearer ${providerToken}` },
@@ -14,10 +24,11 @@ export async function fetchDiscordGuilds(providerToken: string): Promise<Discord
   });
 
   if (!response.ok) {
-    throw new Error(
+    throw new DiscordApiError(
       response.status === 401 || response.status === 403
-        ? "Discordのサーバー一覧を取得できません。いったんログアウトし、再度Discord認証してください。"
-        : `Discord API error (${response.status})`
+        ? "Discordのサーバー一覧を取得できません。Discord認証を更新してください。"
+        : `Discord API error (${response.status})`,
+      response.status
     );
   }
 

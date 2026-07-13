@@ -2865,6 +2865,8 @@ export function WatchlistApp() {
       return;
     }
 
+    await fetch("/auth/discord-session", { method: "DELETE" });
+
     setSpaces([]);
     setDiscordGuilds([]);
     setActiveSpaceId(null);

@@ -1523,8 +1523,10 @@ function IndexManagementDialog({
     )
   );
   const [replacements, setReplacements] = useState<Record<string, string>>({});
+  const [additionId, setAdditionId] = useState("");
   const [feedback, setFeedback] = useState("");
   const memberIds = customIndex.members.map((member) => member.instrumentId);
+  const additionCandidates = instruments.filter((instrument) => !memberIds.includes(instrument.id));
   const enteredTotal = customIndex.members.reduce(
     (sum, member) => sum + (Number(weights[member.instrumentId]) || 0),
     0
@@ -1583,6 +1585,79 @@ function IndexManagementDialog({
     setFeedback("構成銘柄を入れ替えました。リバランス比率は引き継がれています。");
   }
 
+  function removeMember(instrumentId: string) {
+    if (customIndex.members.length <= 2) {
+      return;
+    }
+
+    const remainingMembers = customIndex.members.filter((member) => member.instrumentId !== instrumentId);
+    const sourceWeights = remainingMembers.map((member) =>
+      Math.max(Number(weights[member.instrumentId]) || member.weight, 0)
+    );
+    const remainingWeightTotal = sourceWeights.reduce((sum, weight) => sum + weight, 0);
+    const normalizedWeights = sourceWeights.map((weight) =>
+      remainingWeightTotal > 0 ? Math.round((weight / remainingWeightTotal) * 10000) / 100 : 0
+    );
+    if (remainingWeightTotal <= 0) {
+      const equalWeight = Math.floor(10000 / remainingMembers.length) / 100;
+      normalizedWeights.fill(equalWeight);
+    }
+    normalizedWeights[normalizedWeights.length - 1] = 100 - normalizedWeights
+      .slice(0, -1)
+      .reduce((sum, weight) => sum + weight, 0);
+    const rebalancedAt = new Date().toISOString();
+    const nextMembers = remainingMembers.map((member, index) => ({
+      ...member,
+      weight: normalizedWeights[index],
+      effectiveAt: rebalancedAt
+    }));
+    const firstWeight = nextMembers[0]?.weight ?? 0;
+    const isEqual = nextMembers.every((member) => Math.abs(member.weight - firstWeight) < 0.01);
+    const removedInstrument = instruments.find((instrument) => instrument.id === instrumentId);
+
+    setWeights(Object.fromEntries(nextMembers.map((member) => [member.instrumentId, member.weight.toFixed(2)])));
+    setReplacements({});
+    onUpdate({
+      ...customIndex,
+      members: nextMembers,
+      weighting: isEqual ? "equal" : "custom",
+      lastRebalancedAt: rebalancedAt
+    });
+    setFeedback(`${removedInstrument?.symbol ?? instrumentId}を削除し、残りの構成比を調整しました。`);
+  }
+
+  function addMember() {
+    const addedInstrument = additionCandidates.find((instrument) => instrument.id === additionId);
+    if (!addedInstrument) {
+      return;
+    }
+
+    const rebalancedAt = new Date().toISOString();
+    const nextMemberCount = customIndex.members.length + 1;
+    const equalWeight = Math.floor(10000 / nextMemberCount) / 100;
+    const nextMembers = [
+      ...customIndex.members,
+      { instrumentId: addedInstrument.id, weight: equalWeight, effectiveAt: rebalancedAt }
+    ].map((member, index) => ({
+      ...member,
+      weight: index === nextMemberCount - 1
+        ? 100 - equalWeight * (nextMemberCount - 1)
+        : equalWeight,
+      effectiveAt: rebalancedAt
+    }));
+
+    setWeights(Object.fromEntries(nextMembers.map((member) => [member.instrumentId, member.weight.toFixed(2)])));
+    setAdditionId("");
+    setReplacements({});
+    onUpdate({
+      ...customIndex,
+      members: nextMembers,
+      weighting: "equal",
+      lastRebalancedAt: rebalancedAt
+    });
+    setFeedback(`${addedInstrument.symbol}を追加し、構成比を均等配分に調整しました。`);
+  }
+
   function rebalance() {
     if (!validWeights || !totalIsValid) {
       return;
@@ -1612,7 +1687,7 @@ function IndexManagementDialog({
           <div>
             <span className="eyebrow">Index constituents</span>
             <h2>{customIndex.name}</h2>
-            <p>構成銘柄の確認、入れ替え、構成比率のリバランスができます。</p>
+            <p>構成銘柄の確認、入れ替え、削除、構成比率のリバランスができます。</p>
           </div>
           <button className="icon-button muted" title="閉じる" onClick={onClose}>
             <X size={18} />
@@ -1660,10 +1735,40 @@ function IndexManagementDialog({
                     {replacementCandidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.symbol} / {candidate.name}</option>)}
                   </select>
                   <button className="ghost-button" disabled={!replacements[member.instrumentId]} onClick={() => replaceMember(member.instrumentId)}>入れ替え</button>
+                  <button
+                    className="icon-button muted constituent-remove-button"
+                    disabled={customIndex.members.length <= 2}
+                    title={customIndex.members.length <= 2 ? "指数には2銘柄以上必要です" : `${instrument?.symbol ?? member.instrumentId}を削除`}
+                    aria-label={`${instrument?.symbol ?? member.instrumentId}を構成銘柄から削除`}
+                    onClick={() => removeMember(member.instrumentId)}
+                  >
+                    <Trash2 size={16} />
+                  </button>
                 </div>
               </div>
             );
           })}
+          <div className="constituent-add-row">
+            <select
+              aria-label="追加する構成銘柄"
+              value={additionId}
+              onChange={(event) => setAdditionId(event.target.value)}
+            >
+              <option value="">追加する銘柄を選択</option>
+              {additionCandidates.map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>{candidate.symbol} / {candidate.name}</option>
+              ))}
+            </select>
+            <button
+              className="icon-button constituent-add-button"
+              disabled={!additionId}
+              title="構成銘柄を追加"
+              aria-label="選択した銘柄を構成銘柄に追加"
+              onClick={addMember}
+            >
+              <Plus size={18} />
+            </button>
+          </div>
         </div>
 
         <div className="rebalance-footer">

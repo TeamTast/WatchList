@@ -4,6 +4,7 @@ import { withSharedMarketCache } from "@/lib/market/server-cache";
 import { parseMarketSymbolQuery } from "@/lib/market/symbol-query";
 
 const HISTORY_TTL_MS = 15 * 60_000;
+const HISTORY_CACHE_VERSION = "v2";
 
 export async function GET(request: NextRequest) {
   const parsedSymbols = parseMarketSymbolQuery(request.nextUrl.searchParams.get("symbols"));
@@ -25,7 +26,7 @@ export async function GET(request: NextRequest) {
   }
 
   const history = await withSharedMarketCache(
-    `history:${process.env.MARKET_DATA_PROVIDER ?? "mock"}:${range}:${symbols.join(",")}`,
+    `history:${HISTORY_CACHE_VERSION}:${process.env.MARKET_DATA_PROVIDER ?? "mock"}:${range}:${symbols.join(",")}`,
     HISTORY_TTL_MS,
     async () => ({
       histories: await getMarketHistory(symbols, range),

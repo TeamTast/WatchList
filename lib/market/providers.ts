@@ -273,15 +273,16 @@ export async function getMarketHistory(
 }
 
 async function getYahooHistory(providerSymbols: string[], range: MarketHistoryRange): Promise<MarketHistory[]> {
-  const interval = range === "6mo" ? "1d" : range === "5d" ? "15m" : "5m";
-
   return Promise.all(
     providerSymbols.map(async (providerSymbol) => {
       const symbol = toYahooSymbol(providerSymbol);
+      const useRecentFuturesFallback = range === "1d" && symbol.endsWith("=F");
+      const requestRange = useRecentFuturesFallback ? "5d" : range;
+      const interval = requestRange === "6mo" ? "1d" : requestRange === "5d" ? "15m" : "5m";
       const url = new URL(
         `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`
       );
-      url.searchParams.set("range", range);
+      url.searchParams.set("range", requestRange);
       url.searchParams.set("interval", interval);
       url.searchParams.set("includePrePost", "false");
 
@@ -308,7 +309,7 @@ async function getYahooHistory(providerSymbols: string[], range: MarketHistoryRa
           throw new Error(`Chart history returned no data for ${symbol}`);
         }
 
-        const candles = timestamps
+        const availableCandles = timestamps
           .map((timestamp, index): MarketCandle => ({
             time: Number(timestamp) * 1000,
             open: Number(opens[index] ?? closes[index]),
@@ -327,6 +328,10 @@ async function getYahooHistory(providerSymbols: string[], range: MarketHistoryRa
             && candle.low > 0
             && candle.close > 0
           );
+        const latestAvailableTime = availableCandles.at(-1)?.time ?? 0;
+        const candles = useRecentFuturesFallback
+          ? availableCandles.filter((candle) => candle.time >= latestAvailableTime - 24 * 60 * 60 * 1000)
+          : availableCandles;
         const series = candles.map((candle) => ({ time: candle.time, value: candle.close }));
 
         if (!series.length) {

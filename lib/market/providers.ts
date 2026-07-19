@@ -1,5 +1,5 @@
 import { toFinnhubSymbol } from "@/lib/market/finnhub";
-import type { Instrument, Quote, SeriesPoint } from "@/lib/market/types";
+import type { Instrument, MarketCandle, Quote, SeriesPoint } from "@/lib/market/types";
 
 interface EodhdResponse {
   code?: string;
@@ -36,6 +36,7 @@ interface YahooChartResponse {
       timestamp?: number[];
       indicators?: {
         quote?: Array<{
+          open?: Array<number | null>;
           close?: Array<number | null>;
           high?: Array<number | null>;
           low?: Array<number | null>;
@@ -60,9 +61,12 @@ export interface MarketHistory {
   instrumentId: string;
   quote: Quote | null;
   series: SeriesPoint[];
+  candles: MarketCandle[];
   source: Quote["source"] | null;
   error?: string;
 }
+
+export type MarketHistoryRange = "1d" | "5d" | "6mo";
 
 export async function getMarketSnapshots(providerSymbols: string[]): Promise<Quote[]> {
   const provider = process.env.MARKET_DATA_PROVIDER ?? "mock";
@@ -261,19 +265,24 @@ async function getFinnhubSnapshots(providerSymbols: string[]): Promise<Quote[]> 
   return quotes.filter((quote): quote is Quote => quote !== null);
 }
 
-export async function getMarketHistory(providerSymbols: string[]): Promise<MarketHistory[]> {
-  return getYahooHistory(providerSymbols);
+export async function getMarketHistory(
+  providerSymbols: string[],
+  range: MarketHistoryRange = "1d"
+): Promise<MarketHistory[]> {
+  return getYahooHistory(providerSymbols, range);
 }
 
-async function getYahooHistory(providerSymbols: string[]): Promise<MarketHistory[]> {
+async function getYahooHistory(providerSymbols: string[], range: MarketHistoryRange): Promise<MarketHistory[]> {
+  const interval = range === "6mo" ? "1d" : range === "5d" ? "15m" : "5m";
+
   return Promise.all(
     providerSymbols.map(async (providerSymbol) => {
       const symbol = toYahooSymbol(providerSymbol);
       const url = new URL(
         `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`
       );
-      url.searchParams.set("range", "1d");
-      url.searchParams.set("interval", "5m");
+      url.searchParams.set("range", range);
+      url.searchParams.set("interval", interval);
       url.searchParams.set("includePrePost", "false");
 
       try {
@@ -290,18 +299,35 @@ async function getYahooHistory(providerSymbols: string[]): Promise<MarketHistory
         const result = payload.chart?.result?.[0];
         const timestamps = result?.timestamp ?? [];
         const quoteRow = result?.indicators?.quote?.[0];
+        const opens = quoteRow?.open ?? [];
         const closes = quoteRow?.close ?? [];
+        const highs = quoteRow?.high ?? [];
+        const lows = quoteRow?.low ?? [];
 
         if (!timestamps.length || !closes.length) {
           throw new Error(`Chart history returned no data for ${symbol}`);
         }
 
-        const series = timestamps
-          .map((close, index) => ({
-            time: Number(close) * 1000,
-            value: Number(closes[index])
+        const candles = timestamps
+          .map((timestamp, index): MarketCandle => ({
+            time: Number(timestamp) * 1000,
+            open: Number(opens[index] ?? closes[index]),
+            high: Number(highs[index] ?? closes[index]),
+            low: Number(lows[index] ?? closes[index]),
+            close: Number(closes[index])
           }))
-          .filter((point) => Number.isFinite(point.time) && Number.isFinite(point.value) && point.value > 0);
+          .filter((candle) =>
+            Number.isFinite(candle.time)
+            && Number.isFinite(candle.open)
+            && Number.isFinite(candle.high)
+            && Number.isFinite(candle.low)
+            && Number.isFinite(candle.close)
+            && candle.open > 0
+            && candle.high > 0
+            && candle.low > 0
+            && candle.close > 0
+          );
+        const series = candles.map((candle) => ({ time: candle.time, value: candle.close }));
 
         if (!series.length) {
           throw new Error(`Chart history returned invalid data for ${symbol}`);
@@ -336,6 +362,7 @@ async function getYahooHistory(providerSymbols: string[]): Promise<MarketHistory
           instrumentId: providerSymbol,
           quote,
           series,
+          candles,
           source: "yahoo" as const
         };
       } catch (error) {
@@ -343,6 +370,7 @@ async function getYahooHistory(providerSymbols: string[]): Promise<MarketHistory
           instrumentId: providerSymbol,
           quote: null,
           series: [],
+          candles: [],
           source: null,
           error: error instanceof Error ? error.message : "Failed to load chart history."
         };

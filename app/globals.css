@@ -1351,6 +1351,158 @@ h1 span {
   letter-spacing: -0.04em;
 }
 
+.chart-modal-backdrop {
+  z-index: 30;
+  place-items: center;
+}
+
+.chart-modal {
+  width: min(1120px, 100%);
+  max-height: calc(100dvh - 36px);
+  overflow-y: auto;
+}
+
+.chart-modal-header {
+  margin-bottom: 12px;
+}
+
+.chart-range-switch {
+  display: flex;
+  gap: 1px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  padding: 3px;
+  background: var(--surface);
+}
+
+.chart-range-switch button {
+  min-height: 38px;
+  border: 0;
+  padding: 0 14px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+}
+
+.chart-range-switch button.active {
+  color: var(--accent-contrast);
+  background: var(--accent);
+}
+
+.chart-modal-content {
+  min-height: min(520px, 62dvh);
+}
+
+.chart-modal .chart-frame,
+.candlestick-frame {
+  margin: 0;
+  border: 1px solid var(--line-strong);
+}
+
+.chart-modal .chart-plot {
+  height: min(520px, 62dvh);
+}
+
+.chart-modal-state {
+  display: grid;
+  min-height: min(520px, 62dvh);
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: var(--surface);
+}
+
+.chart-modal-state.error {
+  color: var(--negative);
+}
+
+.chart-modal-state .spin {
+  animation: chart-spin 900ms linear infinite;
+}
+
+.candlestick-frame {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.candlestick-callout-bar {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  border-bottom: 1px solid var(--line-strong);
+  padding: 8px 12px;
+  background: var(--surface);
+}
+
+.candlestick-plot {
+  position: relative;
+  height: min(460px, 54dvh);
+  overflow: hidden;
+  background-color: color-mix(in srgb, var(--surface-raised) 48%, transparent);
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 25% 100%, 100% 25%;
+  cursor: crosshair;
+  touch-action: pan-y;
+  user-select: none;
+}
+
+.candlestick-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.candle line {
+  stroke: currentColor;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.candle rect {
+  fill: currentColor;
+}
+
+.candle.positive {
+  color: var(--positive);
+}
+
+.candle.negative {
+  color: var(--negative);
+}
+
+.candlestick-tooltip {
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  color: var(--text);
+  pointer-events: none;
+}
+
+.candlestick-tooltip strong {
+  width: 100%;
+  font-size: 11px;
+}
+
+.candlestick-tooltip span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+@keyframes chart-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .space-modal {
   width: min(100%, 680px);
   overflow-y: auto;
@@ -2286,6 +2438,35 @@ h1 span {
     width: 100%;
     max-height: calc(100dvh - 20px);
     padding: 16px;
+  }
+
+  .chart-modal-backdrop {
+    place-items: center;
+  }
+
+  .chart-modal {
+    width: 100%;
+  }
+
+  .chart-range-switch button {
+    flex: 1;
+    min-width: 0;
+    padding: 0 8px;
+  }
+
+  .chart-modal-content,
+  .chart-modal-state,
+  .chart-modal .chart-plot {
+    min-height: 0;
+    height: min(430px, 56dvh);
+  }
+
+  .candlestick-callout-bar {
+    min-height: 64px;
+  }
+
+  .candlestick-plot {
+    height: min(350px, 44dvh);
   }
 
   .constituent-row {

@@ -27,7 +27,7 @@ import {
 } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
-import { buildIndexQuote, buildIndexSeries } from "@/lib/market/index-builder";
+import { buildIndexCandles, buildIndexQuote, buildIndexSeries } from "@/lib/market/index-builder";
 import {
   instruments as defaultInstruments,
   defaultIndexes,
@@ -37,6 +37,7 @@ import type {
   AssetClass,
   CustomIndex,
   Instrument,
+  MarketCandle,
   MarketCardView,
   MarketRegion,
   Quote,
@@ -164,6 +165,7 @@ interface HistoryResponse {
     instrumentId: string;
     quote: Quote | null;
     series: SeriesPoint[];
+    candles: MarketCandle[];
     source: Quote["source"] | null;
     error?: string;
   }>;
@@ -671,7 +673,8 @@ function Sparkline({
   previousClose,
   dayHigh,
   dayLow,
-  detailed = false
+  detailed = false,
+  onOpen
 }: {
   series: SeriesPoint[];
   tone: "positive" | "negative" | "neutral";
@@ -680,6 +683,7 @@ function Sparkline({
   dayHigh: number;
   dayLow: number;
   detailed?: boolean;
+  onOpen?: () => void;
 }) {
   const width = detailed ? 840 : 420;
   const height = detailed ? 300 : 128;
@@ -716,17 +720,55 @@ function Sparkline({
   const minTime = orderedSeries[0]?.time ?? 0;
   const maxTime = orderedSeries.at(-1)?.time ?? minTime;
   const timeRange = maxTime - minTime;
-  const points = orderedSeries.map((point) => ({
+  const orderedDeltas = orderedSeries
+    .slice(1)
+    .map((point, index) => point.time - orderedSeries[index].time)
+    .filter((delta) => delta > 0)
+    .sort((a, b) => a - b);
+  const typicalInterval = orderedDeltas[Math.floor(orderedDeltas.length / 2)] ?? 0;
+  const discontinuityThreshold = typicalInterval * 1.75;
+  const slotPositions = orderedSeries.reduce<number[]>((slots, point, index) => {
+    if (index === 0) {
+      slots.push(0);
+      return slots;
+    }
+
+    const delta = point.time - orderedSeries[index - 1].time;
+    slots.push((slots.at(-1) ?? 0) + (typicalInterval > 0 && delta > discontinuityThreshold ? 3 : 1));
+    return slots;
+  }, []);
+  const totalSlots = slotPositions.at(-1) ?? 0;
+  const points = orderedSeries.map((point, index) => ({
     point,
-    x: timeRange
-      ? padding + ((point.time - minTime) / timeRange) * (width - padding * 2)
+    breakBefore: index > 0
+      && typicalInterval > 0
+      && point.time - orderedSeries[index - 1].time > discontinuityThreshold,
+    x: totalSlots > 0
+      ? padding + ((slotPositions[index] ?? 0) / totalSlots) * (width - padding * 2)
       : width / 2,
     y: valueToY(point.value)
   }));
-  const line = points
-    .map(({ x, y }, index) => `${index === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`)
-    .join(" ");
-  const area = `${line} L${width - padding},${height - padding} L${padding},${height - padding} Z`;
+  const pointSegments = points.reduce<Array<(typeof points)[number][]>>((segments, point) => {
+    if (!segments.length || point.breakBefore) {
+      segments.push([point]);
+    } else {
+      segments.at(-1)!.push(point);
+    }
+
+    return segments;
+  }, []);
+  const pathSegments = pointSegments.map((segment) => {
+    const line = segment
+      .map(({ x, y }, index) => `${index === 0 ? "M" : "L"}${x.toFixed(2)},${y.toFixed(2)}`)
+      .join(" ");
+    const firstPoint = segment[0];
+    const lastPoint = segment.at(-1)!;
+
+    return {
+      line,
+      area: `${line} L${lastPoint.x.toFixed(2)},${height - padding} L${firstPoint.x.toFixed(2)},${height - padding} Z`
+    };
+  });
   const singleY = height / 2;
   const activeIndex = activeTime === null
     ? -1
@@ -789,11 +831,10 @@ function Sparkline({
     ? Array.from({ length: Math.max(0, Math.floor((max - firstTick) / niceStep) + 1) }, (_, index) => firstTick + index * niceStep)
     : [];
   const timeTicks = detailed && points.length
-    ? Array.from({ length: 5 }, (_, index) => ({
-        x: padding + (index / 4) * (width - padding * 2),
-        time: minTime + (index / 4) * timeRange
-      }))
+    ? Array.from({ length: 5 }, (_, index) => points[Math.round((index / 4) * (points.length - 1))])
+      .map(({ x, point }) => ({ x, time: point.time }))
     : [];
+  const spansMultipleDays = timeRange > 36 * 60 * 60 * 1000;
 
   function cancelPendingAnchor() {
     if (anchorTimeoutRef.current !== null) {
@@ -921,6 +962,9 @@ function Sparkline({
           ? `${formatSeriesTime(fallbackPoint.point.time)} JST、${formatPrice(fallbackPoint.point.value, currency)}${currency === "PAIR" ? "" : ` ${currency}`}`
           : "価格データなし"}
         aria-describedby={activePoint ? tooltipId : undefined}
+        onClick={() => {
+          onOpen?.();
+        }}
         onFocus={() => {
           if (activeTime === null) {
             selectPointAt(points.length - 1);
@@ -938,6 +982,9 @@ function Sparkline({
           } else if (event.key === "Escape") {
             clearActiveSelection();
             event.currentTarget.blur();
+          } else if (onOpen && (event.key === "Enter" || event.key === " ")) {
+            event.preventDefault();
+            onOpen();
           }
         }}
         onPointerDown={(event) => {
@@ -998,7 +1045,10 @@ function Sparkline({
             <g className="chart-time-tick" key={`${tick.time}-${index}`}>
               <line x1={tick.x} x2={tick.x} y1={padding} y2={height - padding} />
               <text x={tick.x} y={height - 20} textAnchor={index === 0 ? "start" : index === 4 ? "end" : "middle"}>
-                {new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(tick.time))}
+                {new Intl.DateTimeFormat("ja-JP", spansMultipleDays
+                  ? { timeZone: "Asia/Tokyo", month: "2-digit", day: "2-digit", hour: "2-digit", hour12: false }
+                  : { timeZone: "Asia/Tokyo", hour: "2-digit", minute: "2-digit", hour12: false }
+                ).format(new Date(tick.time))}
               </text>
             </g>
           ))}
@@ -1013,16 +1063,20 @@ function Sparkline({
           ) : null}
           {points.length > 1 ? (
             <>
-              <path d={area} fill={comparisonPaint} opacity="0.055" />
-              <path
-                d={line}
-                fill="none"
-                stroke={comparisonPaint}
-                strokeLinecap="square"
-                strokeLinejoin="miter"
-                strokeWidth="1.6"
-                vectorEffect="non-scaling-stroke"
-              />
+              {pathSegments.map((segment, index) => (
+                <g key={index}>
+                  <path d={segment.area} fill={comparisonPaint} opacity="0.055" />
+                  <path
+                    d={segment.line}
+                    fill="none"
+                    stroke={comparisonPaint}
+                    strokeLinecap="square"
+                    strokeLinejoin="miter"
+                    strokeWidth="1.6"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                </g>
+              ))}
             </>
           ) : points.length === 1 ? (
             <line
@@ -1102,6 +1156,7 @@ function MarketCard({
   onRemove,
   onManageIndex,
   onToggleSize,
+  onOpenChart,
   onRename,
   onDragStart,
   onDragEnter,
@@ -1112,6 +1167,7 @@ function MarketCard({
   onRemove: (id: string) => void;
   onManageIndex: (id: string) => void;
   onToggleSize: (id: string) => void;
+  onOpenChart: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onDragStart: (id: string) => void;
   onDragEnter: (id: string) => void;
@@ -1223,6 +1279,7 @@ function MarketCard({
             dayHigh={card.quote.dayHigh}
             dayLow={card.quote.dayLow}
             detailed={card.displaySize === "large"}
+            onOpen={() => onOpenChart(card.id)}
           />
         </>
       ) : (
@@ -1242,6 +1299,378 @@ function MarketCard({
         </footer>
       ) : null}
     </article>
+  );
+}
+
+type ChartDialogRange = "5d" | "6mo";
+
+type ChartDialogData = {
+  series: SeriesPoint[];
+  candles: MarketCandle[];
+};
+
+function formatCandleDate(time: number) {
+  return new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date(time));
+}
+
+function CandlestickChart({
+  candles,
+  currency
+}: {
+  candles: MarketCandle[];
+  currency: MarketCardView["currency"];
+}) {
+  const width = 960;
+  const height = 420;
+  const padding = { top: 18, right: 18, bottom: 38, left: 18 };
+  const svgRef = useRef<SVGSVGElement>(null);
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const orderedCandles = useMemo(() => {
+    const candlesByTime = new Map<number, MarketCandle>();
+
+    candles.forEach((candle) => {
+      if (
+        Number.isFinite(candle.time)
+        && Number.isFinite(candle.open)
+        && Number.isFinite(candle.high)
+        && Number.isFinite(candle.low)
+        && Number.isFinite(candle.close)
+      ) {
+        candlesByTime.set(candle.time, candle);
+      }
+    });
+
+    return Array.from(candlesByTime.values()).sort((a, b) => a.time - b.time);
+  }, [candles]);
+  const min = orderedCandles.length ? Math.min(...orderedCandles.map((candle) => candle.low)) : 0;
+  const max = orderedCandles.length ? Math.max(...orderedCandles.map((candle) => candle.high)) : 0;
+  const range = max - min || 1;
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const step = orderedCandles.length > 1 ? plotWidth / (orderedCandles.length - 1) : plotWidth;
+  const candleWidth = Math.max(1.5, Math.min(8, step * 0.65));
+  const valueToY = (value: number) => padding.top + ((max - value) / range) * plotHeight;
+  const plottedCandles = orderedCandles.map((candle, index) => ({
+    candle,
+    x: orderedCandles.length > 1 ? padding.left + index * step : width / 2
+  }));
+  const displayedIndex = activeIndex ?? Math.max(orderedCandles.length - 1, 0);
+  const priceTicks = Array.from({ length: 5 }, (_, index) => min + (index / 4) * range);
+  const timeTicks = plottedCandles.length
+    ? Array.from({ length: 5 }, (_, index) => plottedCandles[Math.round((index / 4) * (plottedCandles.length - 1))])
+    : [];
+  const displayed = plottedCandles[displayedIndex] ?? null;
+  const active = activeIndex === null ? null : plottedCandles[activeIndex] ?? null;
+
+  function selectNearestCandle(clientX: number) {
+    const svg = svgRef.current;
+    const matrix = svg?.getScreenCTM();
+
+    if (!svg || !matrix || !plottedCandles.length) {
+      return;
+    }
+
+    const pointer = svg.createSVGPoint();
+    pointer.x = clientX;
+    pointer.y = 0;
+    const chartPoint = pointer.matrixTransform(matrix.inverse());
+    const nextIndex = step
+      ? Math.round((chartPoint.x - padding.left) / step)
+      : 0;
+    setActiveIndex(Math.max(0, Math.min(plottedCandles.length - 1, nextIndex)));
+  }
+
+  return (
+    <figure className="candlestick-frame">
+      <div className="candlestick-callout-bar" aria-live="polite">
+        {active ? (
+          <div className="candlestick-tooltip" role="tooltip">
+            <strong>{formatCandleDate(active.candle.time)}</strong>
+            <span>O {formatPrice(active.candle.open, currency)}</span>
+            <span>H {formatPrice(active.candle.high, currency)}</span>
+            <span>L {formatPrice(active.candle.low, currency)}</span>
+            <span>C {formatPrice(active.candle.close, currency)}</span>
+          </div>
+        ) : null}
+      </div>
+      <div
+        className="candlestick-plot"
+        role="slider"
+        tabIndex={0}
+        aria-label="6か月日足ローソク足の時点"
+        aria-valuemin={0}
+        aria-valuemax={Math.max(orderedCandles.length - 1, 0)}
+        aria-valuenow={displayedIndex}
+        aria-valuetext={displayed
+          ? `${formatCandleDate(displayed.candle.time)}、始値${formatPrice(displayed.candle.open, currency)}、高値${formatPrice(displayed.candle.high, currency)}、安値${formatPrice(displayed.candle.low, currency)}、終値${formatPrice(displayed.candle.close, currency)}`
+          : "価格データなし"}
+        onFocus={() => setActiveIndex(Math.max(orderedCandles.length - 1, 0))}
+        onBlur={() => setActiveIndex(null)}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+            event.preventDefault();
+            setActiveIndex((current) => {
+              const index = current ?? Math.max(orderedCandles.length - 1, 0);
+              return Math.max(0, Math.min(orderedCandles.length - 1, index + (event.key === "ArrowLeft" ? -1 : 1)));
+            });
+          } else if (event.key === "Home" || event.key === "End") {
+            event.preventDefault();
+            setActiveIndex(event.key === "Home" ? 0 : Math.max(orderedCandles.length - 1, 0));
+          } else if (event.key === "Escape") {
+            setActiveIndex(null);
+            event.currentTarget.blur();
+          }
+        }}
+        onPointerDown={(event) => selectNearestCandle(event.clientX)}
+        onPointerMove={(event) => selectNearestCandle(event.clientX)}
+        onPointerLeave={(event) => {
+          if (event.pointerType === "mouse") {
+            setActiveIndex(null);
+          }
+        }}
+      >
+        <span className="chart-axis chart-axis-y" aria-hidden="true">Y / price</span>
+        <svg ref={svgRef} className="candlestick-svg" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+          <title>{`6か月日足ローソク足、${orderedCandles.length}本`}</title>
+          {priceTicks.map((tick) => {
+            const y = valueToY(tick);
+            return (
+              <g className="chart-price-tick" key={tick}>
+                <line x1={padding.left} x2={width - padding.right} y1={y} y2={y} />
+                <text x={width - padding.right - 5} y={y - 5} textAnchor="end">{formatPrice(tick, currency)}</text>
+              </g>
+            );
+          })}
+          {timeTicks.map(({ candle, x }, index) => (
+            <g className="chart-time-tick" key={`${candle.time}-${index}`}>
+              <line x1={x} x2={x} y1={padding.top} y2={height - padding.bottom} />
+              <text x={x} y={height - 14} textAnchor={index === 0 ? "start" : index === 4 ? "end" : "middle"}>
+                {new Intl.DateTimeFormat("ja-JP", { timeZone: "Asia/Tokyo", month: "2-digit", day: "2-digit" }).format(new Date(candle.time))}
+              </text>
+            </g>
+          ))}
+          {plottedCandles.map(({ candle, x }) => {
+            const positive = candle.close >= candle.open;
+            const openY = valueToY(candle.open);
+            const closeY = valueToY(candle.close);
+            const bodyTop = Math.min(openY, closeY);
+            const bodyHeight = Math.max(1.5, Math.abs(closeY - openY));
+            const tone = positive ? "positive" : "negative";
+
+            return (
+              <g className={`candle ${tone}`} key={candle.time}>
+                <line x1={x} x2={x} y1={valueToY(candle.high)} y2={valueToY(candle.low)} />
+                <rect
+                  x={x - candleWidth / 2}
+                  y={bodyTop}
+                  width={candleWidth}
+                  height={bodyHeight}
+                />
+              </g>
+            );
+          })}
+          {active ? (
+            <g className="sparkline-crosshair">
+              <line x1={active.x} x2={active.x} y1={padding.top} y2={height - padding.bottom} />
+              <line x1={padding.left} x2={width - padding.right} y1={valueToY(active.candle.close)} y2={valueToY(active.candle.close)} />
+            </g>
+          ) : null}
+        </svg>
+      </div>
+    </figure>
+  );
+}
+
+function ExpandedChartDialog({
+  card,
+  customIndex,
+  instruments,
+  onClose
+}: {
+  card: MarketCardView;
+  customIndex: CustomIndex | null;
+  instruments: Instrument[];
+  onClose: () => void;
+}) {
+  const [range, setRange] = useState<ChartDialogRange>("5d");
+  const [dataByRange, setDataByRange] = useState<Partial<Record<ChartDialogRange, ChartDialogData>>>({});
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  useEffect(() => {
+    if (dataByRange[range]) {
+      setStatus("ready");
+      return;
+    }
+
+    const requestedInstruments = customIndex
+      ? customIndex.members
+        .map((member) => instruments.find((instrument) => instrument.id === member.instrumentId))
+        .filter((instrument): instrument is Instrument => Boolean(instrument))
+      : instruments.filter((instrument) => instrument.id === card.id);
+
+    if (!requestedInstruments.length) {
+      setStatus("error");
+      return;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+    setStatus("loading");
+
+    async function loadChartHistory() {
+      const symbols = requestedInstruments.map((instrument) => instrument.providerSymbol);
+      const response = await fetch(
+        `/api/market/history?symbols=${encodeURIComponent(symbols.join(","))}&range=${range}`,
+        { cache: "no-store", signal: controller.signal }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Chart dialog history failed: ${response.status}`);
+      }
+
+      const payload = (await response.json()) as HistoryResponse;
+      const instrumentByProviderSymbol = new Map(
+        requestedInstruments.map((instrument) => [providerSymbolKey(instrument.providerSymbol), instrument])
+      );
+      const seriesByInstrument: Record<string, SeriesPoint[]> = {};
+      const candlesByInstrument: Record<string, MarketCandle[]> = {};
+
+      payload.histories.forEach((history) => {
+        const instrument = instrumentByProviderSymbol.get(providerSymbolKey(history.instrumentId));
+
+        if (instrument) {
+          seriesByInstrument[instrument.id] = history.series;
+          candlesByInstrument[instrument.id] = history.candles;
+        }
+      });
+
+      const data = customIndex
+        ? {
+            series: buildIndexSeries(customIndex, seriesByInstrument),
+            candles: buildIndexCandles(customIndex, candlesByInstrument)
+          }
+        : {
+            series: seriesByInstrument[card.id] ?? [],
+            candles: candlesByInstrument[card.id] ?? []
+          };
+      const hasData = range === "5d" ? data.series.length > 0 : data.candles.length > 0;
+
+      if (!hasData) {
+        throw new Error("Chart dialog returned no data.");
+      }
+
+      if (!cancelled && !controller.signal.aborted) {
+        setDataByRange((current) => ({ ...current, [range]: data }));
+        setStatus("ready");
+      }
+    }
+
+    void loadChartHistory().catch(() => {
+      if (!cancelled && !controller.signal.aborted) {
+        setStatus("error");
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [card.id, customIndex, dataByRange, instruments, range]);
+
+  const data = dataByRange[range];
+  const values = data?.series.map((point) => point.value) ?? [];
+  const firstValue = values[0] ?? card.quote?.previousClose ?? 0;
+  const lastValue = values.at(-1) ?? card.quote?.price ?? firstValue;
+  const tone = classForChange(lastValue - firstValue);
+  const lineHigh = values.length ? Math.max(...values) : card.quote?.dayHigh ?? 0;
+  const lineLow = values.length ? Math.min(...values) : card.quote?.dayLow ?? 0;
+
+  return (
+    <div
+      className="modal-backdrop chart-modal-backdrop"
+      role="presentation"
+      onPointerDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <section className="modal-panel chart-modal" role="dialog" aria-modal="true" aria-labelledby="expanded-chart-title">
+        <header className="modal-header chart-modal-header">
+          <div>
+            <span className="eyebrow">Expanded chart / JST</span>
+            <h2 id="expanded-chart-title">{card.name}</h2>
+            <p>{card.symbol}</p>
+          </div>
+          <button className="icon-button muted" title="閉じる" aria-label="拡大チャートを閉じる" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="chart-range-switch" role="tablist" aria-label="チャート期間と形式">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={range === "5d"}
+            className={range === "5d" ? "active" : ""}
+            onClick={() => setRange("5d")}
+          >
+            5日 · ライン
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={range === "6mo"}
+            className={range === "6mo" ? "active" : ""}
+            onClick={() => setRange("6mo")}
+          >
+            6か月 · 日足ローソク
+          </button>
+        </div>
+
+        <div className="chart-modal-content">
+          {status === "loading" ? (
+            <div className="chart-modal-state" role="status">
+              <RefreshCw size={22} className="spin" />
+              <strong>チャートを取得中</strong>
+            </div>
+          ) : status === "error" || !data ? (
+            <div className="chart-modal-state error" role="alert">
+              <AlertTriangle size={22} />
+              <strong>この期間のチャートを取得できませんでした。</strong>
+            </div>
+          ) : range === "5d" ? (
+            <Sparkline
+              series={data.series}
+              tone={tone}
+              currency={card.currency}
+              previousClose={firstValue}
+              dayHigh={lineHigh}
+              dayLow={lineLow}
+              detailed
+            />
+          ) : (
+            <CandlestickChart candles={data.candles} currency={card.currency} />
+          )}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -2117,6 +2546,7 @@ export function WatchlistApp() {
   const [customIndexes, setCustomIndexes] = useState<CustomIndex[]>(defaultIndexes);
   const [activeTab, setActiveTab] = useState<"ALL" | MarketRegion>("ALL");
   const [seriesByInstrument, setSeriesByInstrument] = useState<Record<string, SeriesPoint[]>>({});
+  const [chartDialogCardId, setChartDialogCardId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [indexOpen, setIndexOpen] = useState(false);
@@ -2911,6 +3341,8 @@ export function WatchlistApp() {
   ]);
 
   const visibleCards = cardViews.filter((card) => activeTab === "ALL" || card.market === activeTab);
+  const chartDialogCard = cardViews.find((card) => card.id === chartDialogCardId) ?? null;
+  const chartDialogIndex = customIndexes.find((customIndex) => customIndex.id === chartDialogCardId) ?? null;
   const managedIndex = customIndexes.find((customIndex) => customIndex.id === managedIndexId) ?? null;
   const pendingDeleteIndex = customIndexes.find((customIndex) => customIndex.id === pendingDeleteIndexId) ?? null;
   const existingInstrumentIds = cards
@@ -3259,6 +3691,7 @@ export function WatchlistApp() {
               }
             }}
             onManageIndex={setManagedIndexId}
+            onOpenChart={setChartDialogCardId}
             onToggleSize={(id) => setCards((current) => current.map((watchCard) =>
               watchCard.refId === id
                 ? { ...watchCard, size: watchCard.size === "large" ? "normal" : "large" }
@@ -3287,6 +3720,16 @@ export function WatchlistApp() {
           <span>銘柄を追加</span>
         </button>
       </section>
+
+      {chartDialogCard ? (
+        <ExpandedChartDialog
+          key={chartDialogCard.id}
+          card={chartDialogCard}
+          customIndex={chartDialogIndex}
+          instruments={availableInstruments}
+          onClose={() => setChartDialogCardId(null)}
+        />
+      ) : null}
 
       {addOpen ? (
         <AddInstrumentDialog

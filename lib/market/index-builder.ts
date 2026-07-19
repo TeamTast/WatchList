@@ -1,4 +1,4 @@
-import type { CustomIndex, Quote, SeriesPoint } from "@/lib/market/types";
+import type { CustomIndex, MarketCandle, Quote, SeriesPoint } from "@/lib/market/types";
 
 export function buildIndexSeries(
   customIndex: CustomIndex,
@@ -54,4 +54,56 @@ export function buildIndexQuote(
     source,
     realtime: false
   };
+}
+
+export function buildIndexCandles(
+  customIndex: CustomIndex,
+  candlesByInstrument: Record<string, MarketCandle[]>
+): MarketCandle[] {
+  const members = customIndex.members
+    .map((member) => ({
+      ...member,
+      candles: candlesByInstrument[member.instrumentId] ?? []
+    }))
+    .filter((member) => member.candles.length > 0);
+
+  if (!members.length) {
+    return [];
+  }
+
+  const candlesByTime = members.map((member) => new Map(member.candles.map((candle) => [candle.time, candle])));
+  const commonTimes = members[0].candles
+    .map((candle) => candle.time)
+    .filter((time) => candlesByTime.every((candles) => candles.has(time)));
+
+  if (!commonTimes.length) {
+    return [];
+  }
+
+  const totalWeight = members.reduce((sum, member) => sum + member.weight, 0) || 1;
+  const startingCloseByMember = members.map((_, index) => candlesByTime[index].get(commonTimes[0])!.close);
+
+  return commonTimes.map((time) => {
+    const combined = members.reduce(
+      (result, member, index) => {
+        const candle = candlesByTime[index].get(time)!;
+        const factor = customIndex.baseValue * (member.weight / totalWeight) / startingCloseByMember[index];
+
+        result.open += candle.open * factor;
+        result.high += candle.high * factor;
+        result.low += candle.low * factor;
+        result.close += candle.close * factor;
+        return result;
+      },
+      { open: 0, high: 0, low: 0, close: 0 }
+    );
+
+    return {
+      time,
+      open: Number(combined.open.toFixed(2)),
+      high: Number(combined.high.toFixed(2)),
+      low: Number(combined.low.toFixed(2)),
+      close: Number(combined.close.toFixed(2))
+    };
+  });
 }

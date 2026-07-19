@@ -1077,6 +1077,10 @@ h1 span {
   user-select: none;
 }
 
+.chart-frame-detailed .chart-plot {
+  background-image: none;
+}
+
 .sparkline {
   display: block;
   width: 100%;
@@ -1444,10 +1448,6 @@ h1 span {
   height: min(460px, 54dvh);
   overflow: hidden;
   background-color: color-mix(in srgb, var(--surface-raised) 48%, transparent);
-  background-image:
-    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
-  background-size: 25% 100%, 100% 25%;
   cursor: crosshair;
   touch-action: pan-y;
   user-select: none;

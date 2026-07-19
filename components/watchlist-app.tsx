@@ -1436,7 +1436,6 @@ function CandlestickChart({
       >
         <span className="chart-axis chart-axis-y" aria-hidden="true">Y / price</span>
         <svg ref={svgRef} className="candlestick-svg" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
-          <title>{`6か月日足ローソク足、${orderedCandles.length}本`}</title>
           {priceTicks.map((tick) => {
             const y = valueToY(tick);
             return (

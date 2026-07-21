@@ -1089,7 +1089,7 @@ h1 span {
   pointer-events: none;
 }
 
-.app-shell.compact .chart-plot {
+.app-shell.compact .market-card:not(.market-card-large) .chart-plot {
   height: 94px;
 }
 
@@ -1435,19 +1435,71 @@ h1 span {
 }
 
 .candlestick-callout-bar {
-  display: flex;
-  min-height: 58px;
-  align-items: center;
+  min-height: 56px;
   border-bottom: 1px solid var(--line-strong);
-  padding: 8px 12px;
   background: var(--surface);
+}
+
+.candlestick-ohlc {
+  display: grid;
+  width: 100%;
+  min-height: 56px;
+  grid-template-columns: minmax(156px, 1.35fr) repeat(4, minmax(0, 1fr));
+  margin: 0;
+}
+
+.candlestick-ohlc > div {
+  display: grid;
+  min-width: 0;
+  align-content: center;
+  border-left: 1px solid var(--line);
+  padding: 9px 12px 8px;
+}
+
+.candlestick-ohlc > div:first-child {
+  border-left: 0;
+  background: var(--surface-raised);
+}
+
+.candlestick-ohlc dt,
+.candlestick-ohlc dd {
+  overflow: hidden;
+  margin: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.candlestick-ohlc dt {
+  color: var(--subtle);
+  font-size: 8px;
+  font-weight: 850;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.candlestick-ohlc dd {
+  margin-top: 5px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  line-height: 1;
+}
+
+.candlestick-ohlc .positive dd {
+  color: var(--positive);
+}
+
+.candlestick-ohlc .negative dd {
+  color: var(--negative);
 }
 
 .candlestick-plot {
   position: relative;
   height: min(460px, 54dvh);
   overflow: hidden;
-  background-color: color-mix(in srgb, var(--surface-raised) 48%, transparent);
+  background: var(--surface);
   cursor: crosshair;
   touch-action: pan-y;
   user-select: none;
@@ -1461,12 +1513,17 @@ h1 span {
 
 .candle line {
   stroke: currentColor;
-  stroke-width: 1;
+  stroke-width: 1.35;
+  shape-rendering: crispEdges;
   vector-effect: non-scaling-stroke;
 }
 
 .candle rect {
   fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 0.75;
+  shape-rendering: crispEdges;
+  vector-effect: non-scaling-stroke;
 }
 
 .candle.positive {
@@ -1475,26 +1532,6 @@ h1 span {
 
 .candle.negative {
   color: var(--negative);
-}
-
-.candlestick-tooltip {
-  display: flex;
-  width: 100%;
-  flex-wrap: wrap;
-  gap: 6px 10px;
-  color: var(--text);
-  pointer-events: none;
-}
-
-.candlestick-tooltip strong {
-  width: 100%;
-  font-size: 11px;
-}
-
-.candlestick-tooltip span {
-  color: var(--muted);
-  font-size: 9px;
-  font-weight: 750;
 }
 
 @keyframes chart-spin {
@@ -2415,7 +2452,7 @@ h1 span {
     height: 220px;
   }
 
-  .app-shell.compact .chart-plot {
+  .app-shell.compact .market-card:not(.market-card-large) .chart-plot {
     height: 106px;
   }
 
@@ -2462,11 +2499,41 @@ h1 span {
   }
 
   .candlestick-callout-bar {
-    min-height: 64px;
+    min-height: 0;
+  }
+
+  .candlestick-ohlc {
+    min-height: 86px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .candlestick-ohlc > div {
+    padding: 8px 7px;
+  }
+
+  .candlestick-ohlc > .candlestick-date {
+    grid-column: 1 / -1;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    border-bottom: 1px solid var(--line);
+    padding: 7px 9px;
+  }
+
+  .candlestick-ohlc > div:nth-child(2) {
+    border-left: 0;
+  }
+
+  .candlestick-date dd {
+    margin-top: 0;
+    text-align: right;
+  }
+
+  .candlestick-ohlc dd {
+    font-size: 10px;
   }
 
   .candlestick-plot {
-    height: min(350px, 44dvh);
+    height: min(330px, 42dvh);
   }
 
   .constituent-row {

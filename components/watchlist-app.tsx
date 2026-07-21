@@ -1353,7 +1353,7 @@ function CandlestickChart({
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
   const step = orderedCandles.length > 1 ? plotWidth / (orderedCandles.length - 1) : plotWidth;
-  const candleWidth = Math.max(1.5, Math.min(8, step * 0.65));
+  const candleWidth = Math.max(2.5, Math.min(9, step * 0.72));
   const valueToY = (value: number) => padding.top + ((max - value) / range) * plotHeight;
   const plottedCandles = orderedCandles.map((candle, index) => ({
     candle,
@@ -1366,6 +1366,9 @@ function CandlestickChart({
     : [];
   const displayed = plottedCandles[displayedIndex] ?? null;
   const active = activeIndex === null ? null : plottedCandles[activeIndex] ?? null;
+  const displayedTone = displayed && displayed.candle.close >= displayed.candle.open
+    ? "positive"
+    : "negative";
 
   function selectNearestCandle(clientX: number) {
     const svg = svgRef.current;
@@ -1387,15 +1390,33 @@ function CandlestickChart({
 
   return (
     <figure className="candlestick-frame">
-      <div className="candlestick-callout-bar" aria-live="polite">
-        {active ? (
-          <div className="candlestick-tooltip" role="tooltip">
-            <strong>{formatCandleDate(active.candle.time)}</strong>
-            <span>O {formatPrice(active.candle.open, currency)}</span>
-            <span>H {formatPrice(active.candle.high, currency)}</span>
-            <span>L {formatPrice(active.candle.low, currency)}</span>
-            <span>C {formatPrice(active.candle.close, currency)}</span>
-          </div>
+      <div className="candlestick-callout-bar">
+        {displayed ? (
+          <dl
+            className="candlestick-ohlc"
+            aria-label={`${formatCandleDate(displayed.candle.time)}の日足四本値`}
+          >
+            <div className="candlestick-date">
+              <dt>Date</dt>
+              <dd>{formatCandleDate(displayed.candle.time)}</dd>
+            </div>
+            <div>
+              <dt>Open</dt>
+              <dd>{formatPrice(displayed.candle.open, currency)}</dd>
+            </div>
+            <div>
+              <dt>High</dt>
+              <dd>{formatPrice(displayed.candle.high, currency)}</dd>
+            </div>
+            <div>
+              <dt>Low</dt>
+              <dd>{formatPrice(displayed.candle.low, currency)}</dd>
+            </div>
+            <div className={displayedTone}>
+              <dt>Close</dt>
+              <dd>{formatPrice(displayed.candle.close, currency)}</dd>
+            </div>
+          </dl>
         ) : null}
       </div>
       <div
@@ -1458,7 +1479,7 @@ function CandlestickChart({
             const openY = valueToY(candle.open);
             const closeY = valueToY(candle.close);
             const bodyTop = Math.min(openY, closeY);
-            const bodyHeight = Math.max(1.5, Math.abs(closeY - openY));
+            const bodyHeight = Math.max(2.25, Math.abs(closeY - openY));
             const tone = positive ? "positive" : "negative";
 
             return (
